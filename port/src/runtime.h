@@ -48,6 +48,7 @@ void runtime_content_report(void);
 typedef struct { const char *name; void *function; } RuntimeExport;
 #define RUNTIME_LOOKUP(table, nid) runtime_lookup(table, sizeof(table)/sizeof(*(table)), nid)
 const char *runtime_symbol(const char *nid);
+uintptr_t runtime_ngs2_trace_bind(const char *nid, uintptr_t address);
 uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *nid);
 uintptr_t runtime_kernel_resolve(const char *name);
 uintptr_t runtime_file_resolve(const char *name);
