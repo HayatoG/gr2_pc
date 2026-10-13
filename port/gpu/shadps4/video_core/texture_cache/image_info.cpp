@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2024-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <set>
+#include <mutex>
 #include "common/assert.h"
 #include "core/libraries/kernel/process.h"
 #include "core/libraries/videoout/buffer.h"
@@ -124,6 +126,20 @@ ImageInfo::ImageInfo(const AmdGpu::Image& image, const Shader::ImageResource& de
         props.is_depth = true;
     }
     type = image.GetBaseType();
+    props.is_host_2d = image.IsBlock1D();
+    if (image.IsBlock1D()) {
+        // tlg: diagnostics for the BC 1D -> 2D promotion (one line per distinct shape).
+        static std::mutex seen_mutex;
+        static std::set<u64> seen;
+        const u64 key = (u64(image.width) << 40) | (u64(image.height) << 24) |
+                        (u64(image.GetDataFmt()) << 16) | u64(image.GetType());
+        std::scoped_lock lock{seen_mutex};
+        if (seen.insert(key).second && seen.size() < 64) {
+            LOG_WARNING(Render_Vulkan, "tlg: BC 1D image {}x{} format {} type {} at {:#x} -> 2D",
+                        image.width + 1, image.height + 1, u32(image.GetDataFmt()),
+                        u32(image.GetType()), image.Address());
+        }
+    }
     props.is_tiled = image.IsTiled();
     props.is_volume = type == AmdGpu::ImageType::Color3D;
     props.is_pow2 = image.pow2pad;

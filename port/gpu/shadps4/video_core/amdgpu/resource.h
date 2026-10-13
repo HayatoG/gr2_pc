@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstdlib>
 #include "common/alignment.h"
 #include "common/assert.h"
 #include "common/bit_field.h"
@@ -306,6 +307,30 @@ struct Image {
             return ImageType::Color2D;
         }
         return base_type;
+    }
+
+    /// tlg: Vulkan has no block-compressed 1D images (inFAMOUS binds BC1/BC4/BC5 1D textures),
+    /// so these are 2D images of height 1 on the host, sampled at the middle row.
+    bool IsBlock1D() const noexcept {
+        // Off by default: NVIDIA samples BC 1D images correctly although it reports them
+        // unsupported, and the promotion still breaks inFAMOUS HUD elements (minimap streaks).
+        // TLG_BLOCK1D=1 turns it on for drivers that refuse BC 1D.
+        static const bool enabled = [] {
+            const char* e = std::getenv("TLG_BLOCK1D");
+            return e && *e == '1';
+        }();
+        const auto type = GetType();
+        return enabled && (type == ImageType::Color1D || type == ImageType::Color1DArray) &&
+               IsBlockCoded(GetDataFmt());
+    }
+
+    /// The view type of the host image: GetViewType, with block-compressed 1D as 2D.
+    ImageType GetHostViewType(const bool is_array) const noexcept {
+        const auto view = GetViewType(is_array);
+        if (IsBlock1D()) {
+            return view == ImageType::Color1DArray ? ImageType::Color2DArray : ImageType::Color2D;
+        }
+        return view;
     }
 
     ImageType GetViewType(const bool is_array) const noexcept {

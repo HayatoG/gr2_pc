@@ -33,6 +33,8 @@ struct ImageProperties {
     u32 is_block : 1;
     u32 is_depth : 1;
     u32 has_stencil : 1;
+    /// tlg: block-compressed 1D image: still 1D for the cache, a 2D image of height 1 in Vulkan.
+    u32 is_host_2d : 1;
 };
 
 struct ImageInfo {

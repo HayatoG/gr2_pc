@@ -110,7 +110,26 @@ void DataBase::Open() {
             mz_zip_writer_init_file(&zip_ar, cache_path.string().c_str(), 0);
         }
     } else {
+#ifdef TLG_SHADER_CACHE_KEY
+        // tlg: one directory per recompiler revision (TLG_SHADER_CACHE_KEY, a hash of the
+        // recompiler sources): shaders translated by older code are never reused, and their
+        // directories (same serial, another key) are removed.
+        const std::string serial{game_info.GameSerial()};
+        const std::string name = serial + "-" + TLG_SHADER_CACHE_KEY;
+        cache_path = GetUserPath(PathType::CacheDir) / name;
+        std::error_code ec;
+        for (const auto& entry :
+             std::filesystem::directory_iterator(GetUserPath(PathType::CacheDir), ec)) {
+            const auto other = entry.path().filename().string();
+            if (entry.is_directory() && other != name &&
+                (other == serial || other.rfind(serial + "-", 0) == 0)) {
+                LOG_INFO(Render, "Removing shader cache of another recompiler revision: {}", other);
+                std::filesystem::remove_all(entry.path(), ec);
+            }
+        }
+#else
         cache_path = GetUserPath(PathType::CacheDir) / game_info.GameSerial();
+#endif
         if (!std::filesystem::exists(cache_path)) {
             std::filesystem::create_directories(cache_path);
         }

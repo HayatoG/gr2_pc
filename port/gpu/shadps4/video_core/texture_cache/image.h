@@ -184,6 +184,17 @@ public:
         UniqueImage image;
         State state;
         std::vector<State> subresource_states;
+        /// tlg: the last partial transition (range and target state). The same request again,
+        /// with nothing transitioned in between, needs no barriers: skips the walk over every
+        /// level and layer in range (inFAMOUS binds partially transitioned arrays thousands of
+        /// times per frame).
+        struct PartialMemo {
+            bool valid = false;
+            SubresourceRange range{};
+            vk::ImageLayout layout{};
+            vk::AccessFlags2 access{};
+            vk::PipelineStageFlags2 stage{};
+        } partial_memo;
         boost::container::small_vector<ImageViewInfo, 4> image_view_infos;
         boost::container::small_vector<ImageViewId, 4> image_view_ids;
         u32 last_view = 0; ///< tlg: index of the view FindView returned last

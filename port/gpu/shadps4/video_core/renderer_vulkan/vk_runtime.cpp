@@ -35,7 +35,7 @@ static vk::ImageType ConvertImageType(AmdGpu::ImageType type) noexcept {
 
 static std::pair<u32, u32> SanitizeCopyLayers(const VideoCore::ImageInfo& src_info,
                                               const VideoCore::ImageInfo& dst_info,
-                                              const u32 depth) {
+                                              const u32 depth, const char* path = "") {
     const auto vk_src_type = ConvertImageType(src_info.type);
     const auto vk_dst_type = ConvertImageType(dst_info.type);
 
@@ -56,8 +56,8 @@ static std::pair<u32, u32> SanitizeCopyLayers(const VideoCore::ImageInfo& src_in
     if (vk_src_type == vk_dst_type) {
         if (src_layers != dst_layers) {
             LOG_WARNING(Render_Vulkan,
-                        "Coercing copy source layers {} and destination layers {} to minimum.",
-                        src_layers, dst_layers);
+                        "Coercing copy source layers {} and destination layers {} to minimum ({}).",
+                        src_layers, dst_layers, path);
             src_layers = dst_layers = std::min(src_layers, dst_layers);
         }
     } else {
@@ -355,7 +355,7 @@ void Runtime::CopyImage(VideoCore::Image* src, VideoCore::Image* dst) {
         const u32 mip_h = std::max(base_height >> mip, 1u);
         const u32 mip_d = std::max(base_depth >> mip, 1u);
 
-        const auto [src_layers, dst_layers] = SanitizeCopyLayers(src->info, dst->info, mip_d);
+        const auto [src_layers, dst_layers] = SanitizeCopyLayers(src->info, dst->info, mip_d, "CopyImage");
 
         vk::ImageCopy region{};
         region.srcSubresource.aspectMask = src_aspect;
@@ -489,7 +489,7 @@ void Runtime::CopyMip(VideoCore::Image* src, VideoCore::Image* dst, u32 mip, u32
     ASSERT(mip_block_p == (src->info.pitch >> src_dim));
 
     const auto [src_layers, dst_layers] =
-        SanitizeCopyLayers(src->info, dst->info, src->info.size.depth);
+        SanitizeCopyLayers(src->info, dst->info, src->info.size.depth, "CopyMip");
 
     const vk::ImageCopy image_copy{
         .srcSubresource{
@@ -626,7 +626,7 @@ void Runtime::ResolveImage(VideoCore::Image* src, VideoCore::Image* dst,
         FlushBarriers();
     }
 
-    const auto [src_layers, dst_layers] = SanitizeCopyLayers(src->info, dst->info, 1);
+    const auto [src_layers, dst_layers] = SanitizeCopyLayers(src->info, dst->info, 1, "ResolveImage");
     if (!needs_resolve) {
         const vk::ImageCopy region = {
             .srcSubresource{
