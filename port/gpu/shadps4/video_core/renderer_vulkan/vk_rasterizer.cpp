@@ -3190,7 +3190,13 @@ bool Rasterizer::ReadMemory(VAddr addr, u64 size, bool assume_locks) {
     }
     const bool image_readback =
         texture_cache.ResolveReadbacks(addr, size, assume_locks, VideoCore::ReadbackSource::CpuRead);
-    if (!image_readback || buffer_cache.IsRegionGpuModified(addr, size)) {
+    // tlg: without GPU-modified buffer data there is nothing to download: the guest thread no
+    // longer waits for the GPU command thread to reach its request (~3 ms per fault in inFAMOUS,
+    // hundreds per second). TLG_FAST_READ_FAULT=0 restores the round trip.
+    static const bool fast = [] { const char* e = std::getenv("TLG_FAST_READ_FAULT"); return !(e && *e == '0'); }();
+    if (fast && !assume_locks && !buffer_cache.IsRegionGpuModified(addr, size)) {
+        buffer_cache.ReleaseReadProtection(addr, size);
+    } else if (!image_readback || buffer_cache.IsRegionGpuModified(addr, size)) {
         buffer_cache.ReadMemory(addr, size, false, assume_locks);
     }
     return true;
@@ -3486,18 +3492,39 @@ void Rasterizer::UpdateDepthStencilState() const {
             regs.depth_control.backface_enable
                 ? uses_op_val(sc.stencil_fail_back, sc.stencil_zpass_back, sc.stencil_zfail_back)
                 : front_op;
-        const auto ref_conflict = [](AmdGpu::CompareFunc func, const AmdGpu::StencilRefMask& ref) {
-            return func != AmdGpu::CompareFunc::Always && func != AmdGpu::CompareFunc::Never &&
-                   ref.stencil_test_val != ref.stencil_op_val;
+        // tlg: Vulkan has one reference for the test and for ReplaceOp. The test only sees the
+        // compare-mask bits and the write only stores the write-mask bits, so one reference
+        // serves both exactly when the two values agree on the bits in both masks: compare bits
+        // from test_val, the rest from op_val. inFAMOUS hits this ~9500 times a session (effects
+        // masked by the character silhouette went missing with op_val as the test reference).
+        const auto reference = [](bool uses_op, AmdGpu::CompareFunc func,
+                                  const AmdGpu::StencilRefMask& ref, bool& unresolved) -> u32 {
+            if (!uses_op) {
+                return ref.stencil_test_val;
+            }
+            const u32 test = ref.stencil_test_val, op = ref.stencil_op_val;
+            const u32 compare_mask = ref.stencil_mask, write_mask = ref.stencil_write_mask;
+            if (func == AmdGpu::CompareFunc::Always || func == AmdGpu::CompareFunc::Never ||
+                test == op) {
+                return op;
+            }
+            if ((test ^ op) & compare_mask & write_mask) {
+                unresolved = true;
+                return op;
+            }
+            return ((test & compare_mask) | (op & ~compare_mask)) & 0xffu;
         };
-        if ((front_op && ref_conflict(regs.depth_control.stencil_ref_func, front)) ||
-            (back_op && regs.depth_control.backface_enable &&
-             ref_conflict(regs.depth_control.stencil_bf_func, back))) {
-            LOG_WARNING(Render_Vulkan, "Stencil test requires test_val while ReplaceOp requires "
-                                       "op_val; the stencil test will use op_val");
+        bool unresolved = false;
+        const u32 front_ref =
+            reference(front_op, regs.depth_control.stencil_ref_func, front, unresolved);
+        const u32 back_ref = regs.depth_control.backface_enable
+                                 ? reference(back_op, regs.depth_control.stencil_bf_func, back, unresolved)
+                                 : front_ref;
+        if (unresolved) {
+            LOG_WARNING(Render_Vulkan, "Stencil test_val and ReplaceOp op_val differ on bits both "
+                                       "tested and written; the stencil test will use op_val");
         }
-        dynamic_state.SetStencilReferences(front_op ? front.stencil_op_val : front.stencil_test_val,
-                                           back_op ? back.stencil_op_val : back.stencil_test_val);
+        dynamic_state.SetStencilReferences(front_ref, back_ref);
         dynamic_state.SetStencilWriteMasks(!stencil_clear ? front.stencil_write_mask : 0U,
                                            !stencil_clear ? back.stencil_write_mask : 0U);
         dynamic_state.SetStencilCompareMasks(front.stencil_mask, back.stencil_mask);
