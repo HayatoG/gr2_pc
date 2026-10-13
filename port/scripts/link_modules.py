@@ -14,12 +14,12 @@ import collections
 import hashlib
 import json
 from pathlib import Path
+import re
 import struct
 from prepare import parse_self, span, unpack
 from link_libc import encode_id
 
 DEFAULT_MODULES = ('libc.prx', 'libSceFios2.prx')
-FS_LOAD = bytes.fromhex('64488b042500000000')  # mov rax, fs:[0]
 
 
 def canonical(identity, fallback=None):
@@ -79,18 +79,21 @@ def module(path):
                 sha256=hashlib.sha256(source).hexdigest(), missing=missing)
 
 
+# `mov r64, fs:[0]` for any register: 64, REX.W (48/4c), 8b, ModRM mod=00 rm=100 (SIB), SIB 25, disp32 0.
+FS_LOAD_ANY = re.compile(rb'\x64[\x48\x4c]\x8b[\x04\x0c\x14\x1c\x24\x2c\x34\x3c]\x25\x00\x00\x00\x00')
+
+
 def patch_fs_loads(image, ph, base):
-    """Rewrite initial-exec `mov rax, fs:[0]` to GS: glibc owns FS on Linux."""
+    """Rewrite initial-exec `mov reg, fs:[0]` to GS: glibc owns FS on Linux. Games load the
+    thread pointer into any register (inFAMOUS uses rcx/rbx/r14/... besides rax)."""
     patched = 0
     for p in ph:
         if p['type'] != 1 or not p['flags'] & 1:
             continue
         start, end = base + p['vaddr'], base + p['vaddr'] + p['filesz']
-        at = image.find(FS_LOAD, start, end)
-        while at >= 0:
-            image[at] = 0x65
+        for match in FS_LOAD_ANY.finditer(image, start, end):
+            image[match.start()] = 0x65
             patched += 1
-            at = image.find(FS_LOAD, at + len(FS_LOAD), end)
     return patched
 
 
