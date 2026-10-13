@@ -23,7 +23,7 @@ Legenda: **[C]** visto no rastreio ou no binário; **[D]** deduzido com boa conf
   | `SystemDestroy`, `RackDestroy` | destruição; nunca chamadas na sessão |
 
   Nenhuma chamada retornou erro. [C]
-- **Saída:** um buffer float32 LE (tipo 0x18) de 8 canais e 256 frames por render, a 48 kHz. O GR2 pede um **segundo buffer mono** de 256 frames. [C]
+- **Saída:** um buffer float32 LE (tipo 0x18) de 8 canais e 256 frames por render, a 48 kHz. O GR2 pede um **segundo buffer mono** de 256 frames: o alto-falante do controle, vindo da 2ª voz de mastering (`0x30000005`). Portanto o render tem de entregar várias saídas, cada uma com o seu número de canais. [C]
 - **Decodificadores:**
   - PCM;
   - **VAG/HEVAG** (tipo 0x1c);
@@ -68,6 +68,7 @@ Cabeçalho: `u16 size; s16 next; u32 id`. `next` é o deslocamento em bytes até
 | 0x10000001 | ADD_WAVEFORM_BLOCKS | `void *data; u32 numBlocks; u32 flags; Block *blocks`; Block (32 B) = `u32 dataOffset, dataSize, numRepeats, numSkipSamples, numSamples, reserved; u64 userData` |
 | 0x10000005 | PITCH | `float ratio` (≈0.9–1.0) |
 | 0x10000006 | ENVELOPE | `u32 numPoints; u32 numReleasePoints; Point *points`; Point (12 B) = `u32 curve` (0/1/2), `u32 durationSamples`, `float height` |
+| 0x10000008 | CALLBACK de voz (só GR2, vozes 3D) | 0x28 B: função do sndx (FUN_0125f7c0) + user data. A cada render ela lê o PCM mono da voz e chama `sceAudio3dObjectSetAttributes`. Não apareceu nos 4 min rastreados [C estático] |
 | 0x10000009 | PEAK_METER (só GR2) | `u32 enable` |
 | 0x1000000a | FILTER | `u32 index, location, type, channelMask…; float freq, resonance(0.5), gain(1.0)` |
 
@@ -77,7 +78,7 @@ Cabeçalho: `u16 size; s16 next; u32 id`. `next` é o deslocamento em bytes até
 |---|---|---|
 | 0x20000000 | SETUP | `u32 numChannels` = 8 |
 | 0x20000002 | COMPRESSOR | ~8 floats (threshold, ratio, attack, release, gain…) |
-| 0x20000004 | USER_FX | **ponteiro para uma função do jogo** (sndx, ex. 0x800265540) e um contexto. O render precisa chamar código do jogo |
+| 0x20000004 | USER_FX | **ponteiro para uma função do sndx** e um contexto. UMIX, AMP, DISTO (e PANNER no TLG) são funções do próprio sndx (GR2: 0x1265540 UMIX, 0x1265580 AMP, 0x1265500 DISTO). O NGS2 só precisa **chamá-las** no render, sem implementar esses efeitos [C] |
 | 0x20000006 | FILTER | `index, location, type` (1/6/7/8…), `freq` (500/1000/24000), `resonance`, `gain`. Biquad por banda; é o parâmetro mais usado (1,2 M no TLG) |
 
 ### Reverb (0x2001)
@@ -94,15 +95,29 @@ Cabeçalho: `u16 size; s16 next; u32 id`. `next` é o deslocamento em bytes até
 | 0x30000000 | SETUP | 8 canais |
 | 0x30000003 | LIMITER | enable=1, threshold=1.0 |
 | 0x30000004 | GAIN | 1.0 / 1.0 (FBW, LFE) |
-| 0x30000005 | OUTPUT (só GR2) | id 1. Provavelmente leva a 2ª voz de mastering ao buffer mono [H] |
+| 0x30000005 | OUTPUT (só GR2) | id 1: a 2ª voz de mastering vai para o buffer mono do alto-falante do controle [C] |
 
 ### Custom (0x4002)
 
 | ID | Observação |
 |---|---|
 | 0x40020000 | SETUP do rack custom |
-| 0x40001c00 | módulo 0x1c (48 B, **só TLG**). Parâmetros de chorus/delay (taxa, profundidade, mix) [H] |
-| 0x40001d00 | módulo 0x1d (136 B). Lista de pares (ganho, frequência): 70, 140, 210, 367… 920 Hz, com 7 ou 8 bandas. Parece **EQ paramétrico** [H] |
+| 0x40001c00 | módulo 0x1c = **CHORUS** (48 B, só TLG) [D] |
+| 0x40001d00 | módulo 0x1d = **DELAY** multi-tap (136 B): até 8 pares (nível, tempo em ms: 70, 140, 210, 367…) mais feedback/mix [D] |
+
+## 3b. Dados de som
+
+| | TLG | GR2 |
+|---|---|---|
+| sndx | `20160930_trico_lto` | `ps4sndx20160617_3500_gravity2_pause_eco_fix` (mais antigo) |
+| Bancos | `.bod` + `*_sbuf.data` + `.scs` | 188 `.sxd`, mais 199 pares `.sxd1`/`.sxd2` (streams) |
+| ATRAC9 (0x42) | BGM, diálogo, ambiência; até 6 canais | 16.685 ondas, 1/2/4/6/**8** canais, todas a 48 kHz |
+| HEVAG (0x21) | quase todo o SFX, inclusive a 96 kHz | 8.023 ondas, 1–6 canais, a 48/44,1/32 kHz e ~200 taxas quebradas, o que exige **resample arbitrário** |
+| Outros | PCM raro, 0x20 | 3 ondas dummy 0x28; nenhum PCM nem MP3 |
+| FX dos barramentos | THRU, REVERB, COMP, UMIX, DELAY, CHORUS, EQ | EQ 15, COMP 14, REVERB 5, UMIX 3, THRU 2, AMP 2, DISTO 1, DELAY 1 |
+
+- O GR2 usa `enableACP=1`: no nativo, o ATRAC9 passa pelo Ajm. O nosso NGS2 pode ignorar essa flag e usar o LibAtrac9.
+- Das 47 exportações do `libSceNgs2.sprx`, **37 não são usadas** por nenhum dos dois jogos.
 
 ## 4. Plano de implementação
 
@@ -114,7 +129,7 @@ Arquivo novo `port/src/runtime_ngs2.c`, compartilhado pelos dois ports, ligado p
 | 2 | Sampler PCM + VAG/HEVAG, blocos/loops, pitch (resample), envelope, eventos; submixer/mastering como soma com volume de porta e matriz | **SFX audível**; comparar com `*_ref.wav` |
 | 3 | ATRAC9 via LibAtrac9 (até 8 canais, `configData`) | **BGM e diálogo** |
 | 4 | Filtro biquad (sampler e submixer), compressor, limiter, gain | volume e timbre perto do nativo |
-| 5 | Reverb I3DL2, módulos custom 0x1c/0x1d, USER_FX (chamar código do jogo) | ambiência |
+| 5 | Reverb I3DL2, chorus (0x1c) e delay (0x1d), USER_FX e callback de voz (chamar funções do sndx) | ambiência; Audio3d do GR2 |
 | 6 | Trocar o padrão para `hle`, tirar o `libSceNgs2.sprx` da lista de arquivos necessários | Release sem arquivo de firmware |
 
 Estimativa: etapas 1–3 em 2–3 semanas; 4–5 em mais 2–4.
