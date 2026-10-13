@@ -492,9 +492,13 @@ bool PipelineCache::QueueShader(Program& program, HwStage stage, SwStage l_stage
                 ++g_tlg_pool_reuses;
             }
         }
+        // The key keeps the runtime info as the lookup builds it: translation adjusts it
+        // (InjectClipDistanceAttributes adds a fragment input), and a key made after that never
+        // matches again, so every draw queued a new permutation (inFAMOUS: 32768 of one shader).
+        const Shader::RuntimeInfo lookup_runtime = build->runtime;
         build->ir.emplace(Shader::TranslateProgram(build->code, *build->pools, build->info,
                                                    build->runtime, profile));
-        build->spec = Shader::StageSpecialization(build->info, build->runtime, profile, binding);
+        build->spec = Shader::StageSpecialization(build->info, lookup_runtime, profile, binding);
         build->fetch.Capture(build->info);
     };
     // tlg: the capture worker reads guest memory (fetch shader, resource descriptors). A page
@@ -1190,6 +1194,63 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
     return module;
 }
 
+static std::string DescribeSpecDiff(const Shader::StageSpecialization& a, const Shader::StageSpecialization& b) {
+    std::string diff;
+    if (!a.Valid() || !b.Valid()) diff = fmt::format("valid {}/{}", a.Valid(), b.Valid());
+    if (a.bitset != b.bitset) diff += diff.empty() ? "bitset" : ", bitset";
+    auto note = [&](const char* what) { diff += diff.empty() ? what : std::string(", ") + what; };
+    if (a.vs_attribs != b.vs_attribs) note("vs_attribs");
+    if (a.fetch_shader_data != b.fetch_shader_data) note("fetch_shader");
+    if (a.fmasks != b.fmasks) note("fmasks");
+    if (a.start != b.start) note("start_bindings");
+    if (a.buffers != b.buffers) note("buffers");
+    if (a.images != b.images) note("images");
+    if (a.samplers != b.samplers) note("samplers");
+    const auto& ra = a.runtime_info;
+    const auto& rb = b.runtime_info;
+    if (!(ra.props == rb.props)) note("props");
+    if (!ra.HasSameSwInfo(rb.sw)) note("sw_info");
+    if (!ra.HasSameHwInfo(rb.hw)) {
+        if (ra.hw_stage == Shader::HwStage::Fragment) {
+            const auto& fa = ra.hw.fs;
+            const auto& fb = rb.hw.fs;
+            for (size_t i = 0; i < fa.color_buffers.size(); ++i) {
+                if (!(fa.color_buffers[i] == fb.color_buffers[i])) {
+                    diff += fmt::format("{}fs.color_buffers[{}] fmt {}/{} -> {}/{} export {} -> {}",
+                                        diff.empty() ? "" : ", ", i,
+                                        u32(fa.color_buffers[i].data_format), u32(fa.color_buffers[i].num_format),
+                                        u32(fb.color_buffers[i].data_format), u32(fb.color_buffers[i].num_format),
+                                        u32(fa.color_buffers[i].export_format), u32(fb.color_buffers[i].export_format));
+                }
+            }
+            if (!(fa.en_flags == fb.en_flags) || !(fa.addr_flags == fb.addr_flags)) note("fs.input_flags");
+            if (fa.num_inputs != fb.num_inputs) note("fs.num_inputs");
+            if (!std::ranges::equal(fa.inputs.begin(), fa.inputs.begin() + fa.num_inputs, fb.inputs.begin(),
+                                    fb.inputs.begin() + fb.num_inputs)) note("fs.inputs");
+            if (fa.z_export_format != fb.z_export_format) note("fs.z_export");
+            if (fa.num_samples != fb.num_samples) note("fs.num_samples");
+            if (fa.mrtz_mask != fb.mrtz_mask) note("fs.mrtz_mask");
+            if (fa.dual_source_blending != fb.dual_source_blending) note("fs.dual_source");
+            if (fa.clip_distance_emulation != fb.clip_distance_emulation) note("fs.clip_distance");
+            if (fa.front_face_all_bits != fb.front_face_all_bits) note("fs.front_face");
+            if (fa.motion_vectors != fb.motion_vectors) note("fs.motion_vectors");
+        } else {
+            note("hw_info");
+        }
+    }
+    return diff.empty() ? "nothing?" : diff;
+}
+
+void Program::LogPermutationGrowth() const {
+    const size_t n = modules.size();
+    if (n < 16 || (n & (n - 1))) {
+        return;
+    }
+    LOG_WARNING(Render_Vulkan, "tlg: shader {:#x} (hw stage {}) has {} permutations; last two differ in: {}",
+                info.pgm_hash, static_cast<int>(info.hw_stage), n,
+                DescribeSpecDiff(modules[n - 2].spec, modules[n - 1].spec));
+}
+
 PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage hw_stage,
                                                 SwStage sw_stage,
                                                 const Shader::ShaderParams& params,
@@ -1261,8 +1322,9 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
             return {};
         }
         auto start = binding;
+        auto compile_runtime = runtime_info; // translation adjusts it; the key keeps the original
         const auto module =
-            CompileModule(new_program->info, runtime_info, params.code, 0, binding);
+            CompileModule(new_program->info, compile_runtime, params.code, 0, binding);
         auto spec = Shader::StageSpecialization(new_program->info, runtime_info, profile, start);
         const auto perm_hash = HashCombine(params.hash, 0);
 
@@ -1309,6 +1371,13 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
                   : std::ranges::find(program->modules, spec, &Program::Module::spec);
     if (it != program->modules.end()) {
         program->last_used = std::distance(program->modules.begin(), it);
+    }
+    if (it == program->modules.end() && !program->modules.empty()) {
+        const size_t n = program->modules.size();
+        if (n >= 16 && !(n & (n - 1)) && !program->pending) {
+            LOG_WARNING(Render_Vulkan, "tlg: shader {:#x} lookup miss with {} permutations; vs last: {}",
+                        params.hash, n, DescribeSpecDiff(spec, program->modules.back().spec));
+        }
     }
     if (it == program->modules.end()) {
         if (program->pending || std::ranges::find(program->failed_permutations, spec) !=

@@ -158,7 +158,7 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
     const auto supported_format = instance.GetSupportedFormat(info.pixel_format, format_features);
     vk::PhysicalDeviceImageFormatInfo2 format_info{
         .format = supported_format,
-        .type = ConvertImageType(info.type),
+        .type = (info.props.is_host_2d ? vk::ImageType::e2D : ConvertImageType(info.type)),
         .tiling = tiling,
         .usage = usage_flags,
         .flags = flags,
@@ -190,7 +190,7 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
 
     const vk::ImageCreateInfo image_ci = {
         .flags = flags,
-        .imageType = ConvertImageType(info.type),
+        .imageType = (info.props.is_host_2d ? vk::ImageType::e2D : ConvertImageType(info.type)),
         .format = supported_format,
         .extent{
             .width = info.size.width,
@@ -250,6 +250,16 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
         (subres_range->base != SubresourceBase{} || subres_range->extent != info.resources);
     const bool partially_transited = !subresource_states.empty();
 
+    constexpr auto memo_write_flags = vk::AccessFlagBits2::eTransferWrite |
+                                      vk::AccessFlagBits2::eShaderWrite |
+                                      vk::AccessFlagBits2::eMemoryWrite;
+    auto& memo = backing->partial_memo;
+    if (needs_partial_transition && partially_transited && memo.valid &&
+        memo.range == *subres_range && memo.layout == dst_layout && memo.access == dst_mask &&
+        memo.stage == dst_stage) {
+        return;
+    }
+    memo.valid = false;
     if (needs_partial_transition || partially_transited) {
         if (!partially_transited) {
             subresource_states.resize(info.resources.levels * info.resources.layers);
@@ -310,6 +320,8 @@ void Image::GetBarriers(Barriers& barriers, vk::ImageLayout dst_layout, vk::Acce
 
         if (!needs_partial_transition) {
             subresource_states.clear();
+        } else if (!(dst_mask & memo_write_flags)) {
+            memo = {true, *subres_range, dst_layout, dst_mask, dst_stage};
         }
     } else { // Full resource transition
         constexpr auto write_flags = vk::AccessFlagBits2::eTransferWrite |

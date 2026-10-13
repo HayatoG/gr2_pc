@@ -145,7 +145,11 @@ ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info
     const vk::ImageViewCreateInfo image_view_ci = {
         .pNext = &usage_ci,
         .image = image.GetImage(),
-        .viewType = ConvertImageViewType(info.type),
+        // tlg: views of a block-compressed 1D image are 2D (the image is 2D in Vulkan).
+        .viewType = image.info.props.is_host_2d
+                        ? (info.type == AmdGpu::ImageType::Color1DArray ? vk::ImageViewType::e2DArray
+                                                                         : vk::ImageViewType::e2D)
+                        : ConvertImageViewType(info.type),
         .format = instance.GetSupportedFormat(format, image.format_features),
         .components = info.mapping,
         .subresourceRange{

@@ -808,30 +808,49 @@ void PatchImageSampleArgs(IR::Inst& inst, Info& info, const ImageResource& image
                                                  : IR::F32{};
     const IR::F32 lod_clamp = inst_info.has_lod_clamp ? get_addr_reg(addr_reg++) : IR::F32{};
 
+    // tlg: block-compressed 1D textures are 2D images of height 1 on the host (Vulkan has no
+    // BC 1D): sample the middle row, with zero vertical offset and derivatives.
+    IR::Value host_coords = coords, host_offset = offset, host_dx = derivatives_dx, host_dy = derivatives_dy;
+    if (image.IsBlock1D() && !is_msaa) {
+        if (view_type == AmdGpu::ImageType::Color1DArray) {
+            host_coords = ir.CompositeConstruct(ir.CompositeExtract(coords, 0), ir.Imm32(0.5f),
+                                                ir.CompositeExtract(coords, 1));
+        } else {
+            host_coords = ir.CompositeConstruct(coords, ir.Imm32(0.5f));
+        }
+        if (inst_info.has_offset) {
+            host_offset = ir.CompositeConstruct(offset, ir.Imm32(0u));
+        }
+        if (inst_info.has_derivatives) {
+            host_dx = ir.CompositeConstruct(derivatives_dx, ir.Imm32(0.0f));
+            host_dy = ir.CompositeConstruct(derivatives_dy, ir.Imm32(0.0f));
+        }
+    }
+
     auto texel = [&] -> IR::Value {
         if (is_msaa) {
-            return ir.ImageRead(handle, coords, {}, ir.Imm32(0U), inst_info);
+            return ir.ImageRead(handle, host_coords, {}, ir.Imm32(0U), inst_info);
         }
         if (inst_info.is_gather) {
             if (inst_info.is_depth) {
-                return ir.ImageGatherDref(handle, coords, offset, dref, inst_info);
+                return ir.ImageGatherDref(handle, host_coords, host_offset, dref, inst_info);
             }
-            return ir.ImageGather(handle, coords, offset, inst_info);
+            return ir.ImageGather(handle, host_coords, host_offset, inst_info);
         }
         if (inst_info.has_derivatives) {
-            return ir.ImageGradient(handle, coords, derivatives_dx, derivatives_dy, offset,
+            return ir.ImageGradient(handle, host_coords, host_dx, host_dy, host_offset,
                                     lod_clamp, inst_info);
         }
         if (inst_info.is_depth) {
             if (explicit_lod) {
-                return ir.ImageSampleDrefExplicitLod(handle, coords, dref, lod, offset, inst_info);
+                return ir.ImageSampleDrefExplicitLod(handle, host_coords, dref, lod, host_offset, inst_info);
             }
-            return ir.ImageSampleDrefImplicitLod(handle, coords, dref, bias, offset, inst_info);
+            return ir.ImageSampleDrefImplicitLod(handle, host_coords, dref, bias, host_offset, inst_info);
         }
         if (explicit_lod) {
-            return ir.ImageSampleExplicitLod(handle, coords, lod, offset, inst_info);
+            return ir.ImageSampleExplicitLod(handle, host_coords, lod, host_offset, inst_info);
         }
-        return ir.ImageSampleImplicitLod(handle, coords, bias, offset, inst_info);
+        return ir.ImageSampleImplicitLod(handle, host_coords, bias, host_offset, inst_info);
     }();
 
     auto converted = ApplyReadNumberConversionVec4(ir, texel, image.GetNumberConversion());
@@ -902,6 +921,14 @@ void PatchImageArgs(IR::Inst& inst, Info& info) {
     const auto has_ms = view_type == AmdGpu::ImageType::Color2DMsaa ||
                         view_type == AmdGpu::ImageType::Color2DMsaaArray;
     ASSERT(!inst_info.has_lod || !has_ms);
+    // tlg: block-compressed 1D textures are 2D (height 1) on the host: texel row 0.
+    IR::Value host_coords = coords;
+    if (image.IsBlock1D()) {
+        host_coords = view_type == AmdGpu::ImageType::Color1DArray
+                          ? ir.CompositeConstruct(ir.CompositeExtract(coords, 0), ir.Imm32(0u),
+                                                  ir.CompositeExtract(coords, 1))
+                          : ir.CompositeConstruct(coords, ir.Imm32(0u));
+    }
     // If we are binding a single mip level as fallback, drop the argument
     const auto lod =
         (inst_info.has_lod && image_res.mip_fallback_mode != MipStorageFallbackMode::ConstantIndex)
@@ -911,7 +938,7 @@ void PatchImageArgs(IR::Inst& inst, Info& info) {
 
     const auto is_storage = image_res.is_written;
     if (inst.GetOpcode() == IR::Opcode::ImageRead) {
-        auto texel = ir.ImageRead(image_handle, coords, lod, ms, inst_info);
+        auto texel = ir.ImageRead(image_handle, host_coords, lod, ms, inst_info);
         if (is_storage) {
             // Storage image requires shader swizzle.
             texel = ApplySwizzle(ir, texel, image.DstSelect());
@@ -920,7 +947,7 @@ void PatchImageArgs(IR::Inst& inst, Info& info) {
             ApplyReadNumberConversionVec4(ir, texel, image.GetNumberConversion());
         inst.ReplaceUsesWith(converted);
     } else {
-        inst.SetArg(1, coords);
+        inst.SetArg(1, host_coords);
         if (inst.GetOpcode() == IR::Opcode::ImageWrite) {
             inst.SetArg(2, lod);
             inst.SetArg(3, ms);

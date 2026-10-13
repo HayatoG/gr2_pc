@@ -332,6 +332,10 @@ u32 ConsumeWithOverlaysScreenshotRequests() { return 0; }
 ScreenshotRequests ConsumeScreenshotRequests() { return {}; }
 } // namespace VideoCore
 
+extern "C" void tlggpu_overlay_notice(const char* text, float seconds) {
+    TlgOverlay::Notice(text ? text : "", seconds);
+}
+
 extern "C" int tlggpu_overlay_captures_input(void) {
     return TlgOverlay::CapturesInput() ? 1 : 0;
 }

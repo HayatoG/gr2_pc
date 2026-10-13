@@ -705,6 +705,24 @@ void FpsCounter() {
     ImGui::End();
 }
 
+std::string notice_text;
+std::chrono::steady_clock::time_point notice_until;
+
+void NoticeBox() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x * 0.5f,
+                                   viewport->WorkPos.y + 40.0f * base_scale),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.75f);
+    ImGui::Begin("##notice", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                     ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                     ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::SetWindowFontScale(1.3f);
+    ImGui::TextUnformatted(notice_text.c_str());
+    ImGui::End();
+}
+
 void BackgroundLoading() {
     const u32 done = background_done, total = std::max(background_total.load(), 1u);
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -1012,9 +1030,21 @@ void SetLoading(bool active, u32 done, u32 total) {
     loading = active;
 }
 
+void Notice(const std::string& text, float seconds) {
+    std::scoped_lock lock{imgui_mutex};
+    notice_text = text;
+    notice_until = std::chrono::steady_clock::now() +
+                   std::chrono::milliseconds(static_cast<int>(seconds * 1000.0f));
+}
+
+static bool NoticeActive() {
+    return std::chrono::steady_clock::now() < notice_until;
+}
+
 bool Visible() {
     const auto& s = TlgSettings::Get();
     return initialized && (loading || background_total || menu_open || text_entry_active || choice_active ||
+                           NoticeActive() ||
                            choice_retiring || s.show_fps ||
                            (s.actor_watch_supported && s.enemy_health_bar));
 }
@@ -1095,6 +1125,9 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     }
     if (choice_active && !menu_open) {
         ChoiceBox();
+    }
+    if (NoticeActive() && !menu_open) {
+        NoticeBox();
     }
     ImGui::Render();
 

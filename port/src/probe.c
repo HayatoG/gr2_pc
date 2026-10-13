@@ -92,6 +92,40 @@ static ABI __attribute__((noreturn)) void unresolved(uint32_t id, uintptr_t argu
     fflush(NULL);
     _exit(20); /* no destructors: GPU, audio and guest threads are still running */
 }
+/* TLG_IMPORT_TRACE=<n>: each import the host runtime resolves goes through a stub that logs the
+ * call (name, first four integer arguments, caller offset) for its first n calls, then jumps to
+ * the implementation. Shows which system call precedes a guest fault during bring-up. */
+static unsigned char *trace_stubs;
+static uintptr_t *trace_made;
+static uint32_t *trace_counts, trace_limit;
+#define TRACE_STUB_SIZE 192
+static ABI void trace_import(uint32_t index, const uint64_t *regs) {
+    /* regs: rax, r9, r8, rcx, rdx, rsi, rdi, return address */
+    if (__atomic_fetch_add(&trace_counts[index], 1, __ATOMIC_RELAXED) >= trace_limit) return;
+    fprintf(stderr, "IMPORT %s(%#" PRIx64 ", %#" PRIx64 ", %#" PRIx64 ", %#" PRIx64 ") from +%#" PRIxPTR "\n",
+            runtime_import_name(names[index]), regs[6], regs[5], regs[4], regs[3], (uintptr_t)regs[7] - (uintptr_t)image);
+}
+static uintptr_t trace_stub(uint64_t index, uintptr_t target) {
+    if (trace_made[index]) return trace_made[index];
+    unsigned char *t = trace_stubs + index * TRACE_STUB_SIZE, *p = t;
+    static const unsigned char save[] = {0x57,0x56,0x52,0x51,0x41,0x50,0x41,0x51,0x50, 0x48,0x81,0xec,0x80,0,0,0};
+    memcpy(p, save, sizeof(save)); p += sizeof(save);
+    for (int x = 0; x < 8; ++x) { unsigned char m[] = {0xf3,0x0f,0x7f,(unsigned char)(0x44|(x<<3)),0x24,(unsigned char)(x*16)}; memcpy(p, m, 6); p += 6; }
+    uint32_t id = (uint32_t)index;
+    *p++ = 0xbf; memcpy(p, &id, 4); p += 4;
+    static const unsigned char lea[] = {0x48,0x8d,0xb4,0x24,0x80,0,0,0};
+    memcpy(p, lea, sizeof(lea)); p += sizeof(lea);
+    uintptr_t logger = (uintptr_t)trace_import;
+    *p++ = 0x48; *p++ = 0xb8; memcpy(p, &logger, 8); p += 8;
+    *p++ = 0xff; *p++ = 0xd0;
+    for (int x = 0; x < 8; ++x) { unsigned char m[] = {0xf3,0x0f,0x6f,(unsigned char)(0x44|(x<<3)),0x24,(unsigned char)(x*16)}; memcpy(p, m, 6); p += 6; }
+    static const unsigned char restore[] = {0x48,0x81,0xc4,0x80,0,0,0, 0x58,0x41,0x59,0x41,0x58,0x59,0x5a,0x5e,0x5f};
+    memcpy(p, restore, sizeof(restore)); p += sizeof(restore);
+    *p++ = 0x49; *p++ = 0xbb; memcpy(p, &target, 8); p += 8;
+    *p++ = 0x41; *p++ = 0xff; *p++ = 0xe3;
+    if (p - t > TRACE_STUB_SIZE) fail("trace stub too large");
+    return trace_made[index] = (uintptr_t)t;
+}
 #ifndef _WIN32
 /* enter_on_stack(entry, arg0, arg1, stack_top): call entry(arg0,arg1) on a new stack. */
 void enter_on_stack(void *entry, void *arg0, void *arg1, void *top);
@@ -179,18 +213,20 @@ static LONG CALLBACK vectored_fault(EXCEPTION_POINTERS *info) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 static LONG WINAPI unhandled_fault(EXCEPTION_POINTERS *info) { return fatal_exception(info); }
-/* Guest code reads its TCB with `mov rax, gs:[0]` (link_*.py rewrote fs:[0]); on Windows
+/* Guest code reads its TCB with `mov reg, gs:[0]` (link_*.py rewrote fs:[0]); on Windows
  * the displacement becomes the TEB TLS slot that holds the guest TCB (runtime_thread.c). */
 uint32_t runtime_thread_tcb_offset(void);
 static uint64_t patch_tcb_loads(const Segment *segments, uint64_t count) {
-    static const unsigned char load[]={0x65,0x48,0x8b,0x04,0x25,0,0,0,0};
+    /* gs, REX.W (48/4c), 8b, ModRM mod=00 rm=100 (any register), SIB 25, disp32 0. */
+    static const unsigned char zero[4]={0};
     uint32_t displacement=runtime_thread_tcb_offset();
     uint64_t patched=0;
     for (uint64_t s=0;s<count;++s) {
-        if (!(segments[s].flags&1) || segments[s].size<sizeof(load)) continue;
-        unsigned char *at=image+segments[s].address, *end=at+segments[s].size-sizeof(load);
+        if (!(segments[s].flags&1) || segments[s].size<9) continue;
+        unsigned char *at=image+segments[s].address, *end=at+segments[s].size-9;
         for (; at<=end; ++at)
-            if (at[0]==0x65 && !memcmp(at,load,sizeof(load))) { memcpy(at+5,&displacement,4); ++patched; at+=sizeof(load)-1; }
+            if (at[0]==0x65 && (at[1]==0x48 || at[1]==0x4c) && at[2]==0x8b && (at[3]&0xc7)==0x04 && at[4]==0x25 &&
+                !memcmp(at+5,zero,4)) { memcpy(at+5,&displacement,4); ++patched; at+=8; }
     }
     return patched;
 }
@@ -831,14 +867,24 @@ int main(int argc, char **argv) {
         t[8] = 0x48; t[9] = 0xb8; memcpy(t + 10, &handler, 8);
         t[18] = 0xff; t[19] = 0xe0;
     }
+    const char *import_trace = getenv("TLG_IMPORT_TRACE");
+    if (import_trace && *import_trace) {
+        trace_limit = atoi(import_trace) > 0 ? (uint32_t)atoi(import_trace) : 50;
+        trace_stubs = allocate(round_page((import_count + 1) * TRACE_STUB_SIZE));
+        trace_made = calloc(import_count + 1, sizeof(*trace_made));
+        trace_counts = calloc(import_count + 1, sizeof(*trace_counts));
+        if (!trace_made || !trace_counts) fail("allocation failed");
+    }
     for (uint64_t i = 0; i < nr; ++i) {
         uintptr_t value = relocs[i].kind == 2 ? (uintptr_t)(data_traps + page_size * relocs[i].value + relocs[i].addend)
                         : relocs[i].kind == 1 ? (uintptr_t)(traps + 32 * relocs[i].value)
                         : (uintptr_t)image + relocs[i].value;
         if (relocs[i].kind) {
             uintptr_t resolved = runtime_resolve(names[relocs[i].value], relocs[i].kind == 2);
-            if (resolved) value = resolved + relocs[i].addend;
-            else if (native_libc && bindings[relocs[i].value]) {
+            if (resolved) {
+                value = resolved + relocs[i].addend;
+                if (trace_stubs && relocs[i].kind == 1 && !relocs[i].addend) value = trace_stub(relocs[i].value, resolved);
+            } else if (native_libc && bindings[relocs[i].value]) {
                 uint64_t address=bindings[relocs[i].value];
                 if (binding_kinds[relocs[i].value]!=relocs[i].kind || !mapped(segments,ns,address,relocs[i].addend+1)) fail("native export kind/range mismatch");
                 value=(uintptr_t)image+address+relocs[i].addend;
@@ -873,6 +919,7 @@ int main(int argc, char **argv) {
     printf("Guest TCB loads redirected to the TEB TLS slot: %" PRIu64 "\n", patch_tcb_loads(segments, ns));
 #endif
     protect(traps, round_page((import_count + 1) * 32), 5);
+    if (trace_stubs) protect(trace_stubs, round_page((import_count + 1) * TRACE_STUB_SIZE), 5);
     protect(image, round_page(size), 0);
     int executable_entry = 0;
     for (uint64_t i = 0; i < ns; ++i) {

@@ -68,12 +68,17 @@ struct Program {
 
     void AddPermut(vk::ShaderModule module, Shader::StageSpecialization&& spec) {
         modules.emplace_back(module, std::move(spec));
+        LogPermutationGrowth();
     }
+    /// tlg: at 16, 32, 64... permutations, logs which key fields differ between the last two
+    /// (a field that changes every draw makes the list, and every lookup, grow without end).
+    void LogPermutationGrowth() const;
 
     void InsertPermut(vk::ShaderModule module, Shader::StageSpecialization&& spec,
                       size_t perm_idx) {
         modules.resize(std::max(modules.size(), perm_idx + 1)); // <-- beware of realloc
         modules[perm_idx] = {module, std::move(spec)};
+        LogPermutationGrowth();
     }
 };
 

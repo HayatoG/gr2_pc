@@ -88,6 +88,9 @@ public:
 
     /// Flushes any GPU modified buffer in the logical page range back to CPU memory.
     void ReadMemory(VAddr device_addr, u64 size, bool is_write = false, bool assume_locks = false);
+    /// tlg: a CPU read fault on pages with no GPU-modified data: lift the read protection on the
+    /// faulting thread instead of a round trip through the GPU command thread.
+    void ReleaseReadProtection(VAddr device_addr, u64 size);
 
     /// Finds a buffer for the specified region.
     [[nodiscard]] std::pair<const Buffer*, u64> ObtainBuffer(VAddr device_addr, u32 size,
