@@ -124,6 +124,7 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
 
     // tlg: one line per compute shader wider than a 32-lane wave that uses lane operations:
     // the candidates when wave64 code misbehaves on 32-wide hardware (flickering lights).
+    bool lane_math = false; // the shader numbers lanes (ballots, prefix masks)
     {
         u32 counts[12]{};
         static constexpr const char* names[12]{"Ballot", "GetExec", "SetExec", "GroupAny",
@@ -150,6 +151,7 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
                 }
             }
         }
+        lane_math = counts[0] || counts[11];
         std::string used;
         for (int i = 0; i < 12; ++i) {
             if (counts[i]) used += fmt::format("{}{} {}", used.empty() ? "" : ", ", names[i], counts[i]);
@@ -181,6 +183,12 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
         for (IR::Inst& inst : block->Instructions()) {
             if (inst.GetOpcode() == IR::Opcode::ReadLane && inst.Arg(1).IsImmediate()) {
                 push_worklist(inst);
+            } else if (inst.GetOpcode() == IR::Opcode::ReadFirstLane && lane_math && is_uniform) {
+                // tlg: append pattern: the wave counts its items (ballot / prefix mask), one
+                // lane reserves space with an atomic and ReadFirstLane broadcasts the base.
+                // On 32-wide hardware the second half read its own first lane, which never
+                // reserved anything (inFAMOUS: flickering lights and steam).
+                worklist.push_back(&inst);
             } else if (inst.GetOpcode() == IR::Opcode::Ballot) {
                 const auto is_unpack = [](const IR::Use& use) {
                     return use.user->GetOpcode() == IR::Opcode::UnpackUint2x32;
@@ -252,6 +260,17 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
                 IR::U32{ir.LoadShared(32, false,
                                       ir.IAdd(ir.BitwiseAnd(offset, ir.Imm32(~7u)),
                                               ir.ShiftLeftLogical(half, ir.Imm32(2u))))};
+            ir.Barrier();
+            inst->ReplaceUsesWithAndRemove(value);
+        } else if (inst->GetOpcode() == IR::Opcode::ReadFirstLane) {
+            // In uniform flow every lane is active: the wave64's first lane is the first lane of
+            // the even 32-lane half.
+            const IR::U32 offset =
+                ir.IAdd(ir.Imm32(scratch_base), ir.ShiftLeftLogical(subgroup_id, ir.Imm32(2u)));
+            ir.WriteShared(32, ir.ReadFirstLane(IR::U32{inst->Arg(0)}), offset);
+            ir.Barrier();
+            const IR::U32 value =
+                IR::U32{ir.LoadShared(32, false, ir.BitwiseAnd(offset, ir.Imm32(~7u)))};
             ir.Barrier();
             inst->ReplaceUsesWithAndRemove(value);
         } else if (inst->GetOpcode() == IR::Opcode::GetAttributeU32 &&
