@@ -35,6 +35,8 @@ int tlggpu_choice_begin(const char *title, const char *const *items, const char 
 int tlggpu_choice_poll(void);
 /* 1 while the in-game settings menu is open: the game's pad input is held neutral. */
 int tlggpu_overlay_captures_input(void);
+/* A short message at the top of the screen (any thread). */
+void tlggpu_overlay_notice(const char *text, float seconds);
 /* Number of symbols registered by the vendored libraries (diagnostics). */
 unsigned tlggpu_symbol_count(void);
 #ifdef __cplusplus
