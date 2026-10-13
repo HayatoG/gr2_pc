@@ -1,3 +1,5 @@
+<p align="center"><img src="port/packaging/icon/gr2-icon-1024.png" width="160" alt=""></p>
+
 <h1 align="center">Gravity Rush 2 — port nativo para PC</h1>
 
 <p align="center">
@@ -25,6 +27,16 @@ Por **HayatoG** · YouTube [@hayatog-dev](https://www.youtube.com/@hayatog-dev) 
 
 <sub>Capturas na resolução nativa (1920×1080), direto da GPU, no Linux com uma RTX 2060, com o jogo em português.</sub>
 
+## Novidades
+
+- **Launcher bilíngue** (português e inglês, automático ou escolhido), com o **idioma do jogo** (voz e texto) escolhido ali.
+- **Linhas pretas:** o contorno do geometry shader com adjacência, que gerava os traços pretos perto dos personagens, fica desligado por padrão ([`docs/BUG_LINHAS_PRETAS.md`](docs/BUG_LINHAS_PRETAS.md), [#1](https://github.com/HayatoG/gr2_pc/issues/1)).
+- **Sensor de movimento:** o giroscópio do DualShock 4/DualSense funciona direto. Em controles sem sensor, um toque em Share (ou L3+R3) liga o "modo sensor": o analógico esquerdo inclina o controle e X/A sacode. No teclado, T/G inclinam e Y sacode.
+- **Analógicos:** zona morta de 10% contra drift (`TLG_STICK_DEADZONE`), e o último controle usado é o que vale.
+- **Touchpad sem touchpad:** segure View/Select (ou Tab) e mova o analógico direito (ou as setas) para deslizar o dedo; um toque rápido continua sendo clique.
+- **Desempenho:** o FPS não cai mais com o tempo (as variantes de shader agora se repetem), e transições parciais de imagem repetidas são puladas.
+- **Cache de shaders automático:** a pasta do cache leva a versão do tradutor de shaders, e o cache antigo é apagado sozinho depois de uma atualização.
+
 ## Status
 
 | Área | Estado |
@@ -33,11 +45,11 @@ Por **HayatoG** · YouTube [@hayatog-dev](https://www.youtube.com/@hayatog-dev) 
 | Título, menu e gameplay | ✅ 30 FPS, 1080p nativo |
 | Áudio | ✅ Com o `libSceNgs2.sprx` do firmware do seu console + Audio3d reimplementado |
 | Idioma | ✅ Escolhido no launcher (legendas e menus em português testados) |
-| Controle | ✅ DualSense, DualShock 4, Xbox e 8BitDo via SDL3 |
+| Controle | ✅ DualSense, DualShock 4, Xbox e 8BitDo via SDL3; sensor de movimento real ou simulado e touchpad simulado |
 | Linhas pretas perto dos personagens | 🔧 Contorno do geometry shader desligado por padrão ([#1](https://github.com/HayatoG/gr2_pc/issues/1)) |
 | Saves e mundo aberto | ⏳ Testando ([#6](https://github.com/HayatoG/gr2_pc/issues/6)) |
 | Linux | ✅ Testado (Nobara/Fedora 44) |
-| Windows | 🧪 Em preparação ([#5](https://github.com/HayatoG/gr2_pc/issues/5)) |
+| Windows | 🧪 Build automático, ainda sem teste em jogo ([#5](https://github.com/HayatoG/gr2_pc/issues/5)) |
 | macOS (Apple Silicon) | 📋 Planejado ([#5](https://github.com/HayatoG/gr2_pc/issues/5)) |
 
 ![Desempenho de uma sessão de 5 minutos](docs/screenshots/desempenho.png)
@@ -65,17 +77,19 @@ Tudo vem do **seu** PS4 (GoldHEN + Itemzflow). Nada disso vai no download. Use *
 | `Gravite2_Patch_Chunk0.psarc`, `Gravite2_Patch_Chunk1.psarc` | update 01.11 | 0,5 + 1,6 GB | correções do update |
 | `sce_discmap.plt`, `sce_discmap_patch.plt` | update 01.11 | pequenos | mapa de arquivos |
 
-**Do firmware do console (opcional, para ter som):** `libSceNgs2.sprx`, de `/system/common/lib/` do seu PS4. Ele vai na pasta `system_lib/` ao lado do executável.
+**Do firmware do console (opcional, para ter som):** `libSceNgs2.sprx`, de `/system/common/lib/` do seu PS4. Ele vai na pasta `system_lib/` ao lado do executável. Ainda é necessário: o áudio sem esse arquivo está em [#8](https://github.com/HayatoG/gr2_pc/issues/8).
 
 **Como montar a pasta:**
 1. No Itemzflow, faça o dump do jogo (`CUSA03694`) e do update (`CUSA03694-patch`) para um pendrive exFAT.
 2. No PC, copie a pasta do jogo base e depois copie o conteúdo do update **por cima**, substituindo os arquivos. Também dá para usar `scripts/make_game_view.py <base> <update> <saída>`, que monta a pasta com links, sem ocupar espaço.
 3. Confira os tamanhos. Arquivos acima de 4 GB vindos pelo FTP do GoldHEN 2.2 chegam cortados, então use o pendrive.
 
+A lista completa, que também vai nas notas de cada Release, está em [`docs/ARQUIVOS_NECESSARIOS.md`](docs/ARQUIVOS_NECESSARIOS.md).
+
 ## Como jogar
 
 1. Extraia o pacote e coloque o `libSceNgs2.sprx` na pasta `system_lib/`.
-2. Abra o **Gravity Rush 2**, escolha a pasta do jogo e o idioma, e clique em **Jogar**.
+2. Abra o **Gravity Rush 2**, escolha a pasta do jogo e o idioma do jogo (e, se quiser, o da interface), e clique em **Jogar**.
 3. No jogo, **F10** liga o contador de FPS, e **Insert** (ou R3 + L2 no controle) abre o menu do port.
 
 ## Compilar do código-fonte
@@ -104,15 +118,16 @@ O plano completo está em [`docs/ROADMAP.md`](docs/ROADMAP.md).
 - [#1](https://github.com/HayatoG/gr2_pc/issues/1) linhas pretas (geometry shader);
 - [#2](https://github.com/HayatoG/gr2_pc/issues/2) 60 FPS;
 - [#3](https://github.com/HayatoG/gr2_pc/issues/3) imagem (pós-processamento, resolução, FSR/DLSS);
-- [#4](https://github.com/HayatoG/gr2_pc/issues/4) mouse, teclado, giroscópio e touchpad;
+- [#4](https://github.com/HayatoG/gr2_pc/issues/4) mouse e teclado (o giroscópio e o touchpad simulado já entraram);
 - [#5](https://github.com/HayatoG/gr2_pc/issues/5) pacotes Linux/Windows/macOS;
-- [#6](https://github.com/HayatoG/gr2_pc/issues/6) jogar do início ao fim.
+- [#6](https://github.com/HayatoG/gr2_pc/issues/6) jogar do início ao fim;
+- [#8](https://github.com/HayatoG/gr2_pc/issues/8) áudio sem o arquivo do firmware.
 
 ## Créditos e aviso legal
 
 Base de código: [tlg_pc](https://github.com/HayatoG/tlg_pc), [gow3_pc](https://github.com/FelipePrado0/gow3_pc) (FelipePrado0), [bloodborne_pc](https://github.com/deadinside28/bloodborne_pc) e [shadPS4](https://github.com/shadps4-emu/shadPS4), todos GPL-2.0, assim como este projeto ([LICENSE](port/LICENSE)). Áudio ATRAC9 via [LibAtrac9](https://github.com/Thealexbarney/LibAtrac9); fontes via [FreeType](https://freetype.org).
 
-Este projeto não tem vínculo com a Sony Interactive Entertainment ou a SIE Japan Studio. Gravity Rush é marca da Sony Interactive Entertainment. Nenhum código, arquivo ou arte do jogo é distribuído aqui.
+Este projeto não tem vínculo com a Sony Interactive Entertainment ou a SIE Japan Studio. Gravity Rush é marca da Sony Interactive Entertainment. Nenhum código, arquivo ou arte do jogo é distribuído aqui. O ícone é uma arte original do projeto.
 
 ---
 
@@ -128,6 +143,16 @@ By **HayatoG** · YouTube [@hayatog-dev](https://www.youtube.com/@hayatog-dev) �
 
 The screenshots and the performance chart are at the top of this page.
 
+## What's new
+
+- **Bilingual launcher** (Portuguese and English, automatic or chosen), where the **game language** (voice and text) is picked too.
+- **Black streaks:** the adjacency geometry-shader outline that drew black streaks near characters is off by default ([`docs/BUG_LINHAS_PRETAS.md`](docs/BUG_LINHAS_PRETAS.md), in Portuguese, [#1](https://github.com/HayatoG/gr2_pc/issues/1)).
+- **Motion sensor:** the DualShock 4/DualSense gyro works as is. On controllers without one, a tap on Share (or L3+R3) toggles "sensor mode": the left stick tilts the controller and cross/A shakes it. On the keyboard, T/G tilt and Y shakes.
+- **Sticks:** a 10% dead zone against drift (`TLG_STICK_DEADZONE`), and the last controller used is the one that counts.
+- **Touchpad without a touchpad:** hold View/Select (or Tab) and move the right stick (or the arrow keys) to swipe; a quick tap still clicks.
+- **Performance:** FPS no longer drops over time (shader variants are now reused), and repeated partial image transitions are skipped.
+- **Automatic shader cache:** the cache folder is keyed by the shader recompiler version, and the old cache is deleted on its own after an update.
+
 ## Status
 
 | Area | State |
@@ -136,11 +161,11 @@ The screenshots and the performance chart are at the top of this page.
 | Title, menu and gameplay | ✅ 30 FPS, native 1080p |
 | Audio | ✅ With `libSceNgs2.sprx` from your console's firmware + reimplemented Audio3d |
 | Language | ✅ Chosen in the launcher (Portuguese subtitles and menus tested) |
-| Controller | ✅ DualSense, DualShock 4, Xbox and 8BitDo via SDL3 |
+| Controller | ✅ DualSense, DualShock 4, Xbox and 8BitDo via SDL3; real or simulated motion sensor and simulated touchpad |
 | Black streaks near characters | 🔧 Geometry-shader outline off by default ([#1](https://github.com/HayatoG/gr2_pc/issues/1)) |
 | Saves and open world | ⏳ Testing ([#6](https://github.com/HayatoG/gr2_pc/issues/6)) |
 | Linux | ✅ Tested (Nobara/Fedora 44) |
-| Windows | 🧪 In preparation ([#5](https://github.com/HayatoG/gr2_pc/issues/5)) |
+| Windows | 🧪 Automatic build, not yet tested in game ([#5](https://github.com/HayatoG/gr2_pc/issues/5)) |
 | macOS (Apple Silicon) | 📋 Planned ([#5](https://github.com/HayatoG/gr2_pc/issues/5)) |
 
 ## Download
@@ -164,17 +189,19 @@ Everything comes from **your own** PS4 (GoldHEN + Itemzflow). None of it is in t
 | `Gravite2_Patch_Chunk0.psarc`, `Gravite2_Patch_Chunk1.psarc` | update 01.11 | 0.5 + 1.6 GB | update fixes |
 | `sce_discmap.plt`, `sce_discmap_patch.plt` | update 01.11 | small | file map |
 
-**From the console firmware (optional, for audio):** `libSceNgs2.sprx`, from `/system/common/lib/` on your PS4. It goes in the `system_lib/` folder next to the executable.
+**From the console firmware (optional, for audio):** `libSceNgs2.sprx`, from `/system/common/lib/` on your PS4. It goes in the `system_lib/` folder next to the executable. It is still needed: audio without it is [#8](https://github.com/HayatoG/gr2_pc/issues/8).
 
 **How to build the folder:**
 1. In Itemzflow, dump the game (`CUSA03694`) and the update (`CUSA03694-patch`) to an exFAT USB drive.
 2. On the PC, copy the base game folder, then copy the update's contents **over it**, replacing files. Or use `scripts/make_game_view.py <base> <update> <out>`, which builds the folder with links and uses no extra space.
 3. Check the sizes. Files over 4 GB sent through GoldHEN 2.2's FTP arrive truncated, so use the USB drive.
 
+The full list, which also goes in the notes of every Release, is in [`docs/ARQUIVOS_NECESSARIOS.md`](docs/ARQUIVOS_NECESSARIOS.md).
+
 ## How to play
 
 1. Extract the package and put `libSceNgs2.sprx` in the `system_lib/` folder.
-2. Open **Gravity Rush 2**, pick the game folder and the language, and click **Play**.
+2. Open **Gravity Rush 2**, pick the game folder and the game language (and, if you like, the interface language), and click **Play**.
 3. In game, **F10** toggles the FPS counter, and **Insert** (or R3 + L2 on a controller) opens the port's menu.
 
 ## Building from source
@@ -203,12 +230,13 @@ The full plan is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 - [#1](https://github.com/HayatoG/gr2_pc/issues/1) black streaks (geometry shader);
 - [#2](https://github.com/HayatoG/gr2_pc/issues/2) 60 FPS;
 - [#3](https://github.com/HayatoG/gr2_pc/issues/3) graphics (post-processing, resolution, FSR/DLSS);
-- [#4](https://github.com/HayatoG/gr2_pc/issues/4) mouse, keyboard, gyro and touchpad;
+- [#4](https://github.com/HayatoG/gr2_pc/issues/4) mouse and keyboard (gyro and the simulated touchpad are in);
 - [#5](https://github.com/HayatoG/gr2_pc/issues/5) Linux/Windows/macOS packages;
-- [#6](https://github.com/HayatoG/gr2_pc/issues/6) playing start to finish.
+- [#6](https://github.com/HayatoG/gr2_pc/issues/6) playing start to finish;
+- [#8](https://github.com/HayatoG/gr2_pc/issues/8) audio without the firmware file.
 
 ## Credits and legal notice
 
 Code base: [tlg_pc](https://github.com/HayatoG/tlg_pc), [gow3_pc](https://github.com/FelipePrado0/gow3_pc) (FelipePrado0), [bloodborne_pc](https://github.com/deadinside28/bloodborne_pc) and [shadPS4](https://github.com/shadps4-emu/shadPS4), all GPL-2.0, as is this project ([LICENSE](port/LICENSE)). ATRAC9 audio via [LibAtrac9](https://github.com/Thealexbarney/LibAtrac9); fonts via [FreeType](https://freetype.org).
 
-This project is not affiliated with Sony Interactive Entertainment or SIE Japan Studio. Gravity Rush is a trademark of Sony Interactive Entertainment. No game code, files or art are distributed here.
+This project is not affiliated with Sony Interactive Entertainment or SIE Japan Studio. Gravity Rush is a trademark of Sony Interactive Entertainment. No game code, files or art are distributed here. The icon is original artwork made for this project.
