@@ -353,7 +353,7 @@ def launch(settings, seconds=0, extra_env=None):
     The process's combined output is a text pipe; the caller copies it to the log."""
     USER_DIR.mkdir(parents=True, exist_ok=True)
     update_ini(USER_DIR / 'tlg.ini', {
-        'display_mode': settings['display_mode'],
+        'display_mode': str(settings['display_mode']).lower(),  # the game's keys: windowed|borderless|fullscreen
         'vsync': int(bool(settings['vsync'])),
         'show_fps': int(bool(settings['show_fps'])),
     })
