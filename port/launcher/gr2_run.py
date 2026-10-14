@@ -131,15 +131,21 @@ def shader_cache_serials(settings):
     return sorted({*SHADER_CACHE_SERIALS, *([serial] if serial else [])})
 
 
+def gpu_user_dir():
+    """Where the GPU backend keeps its caches (shaders, pipelines): the saves folder, on every OS.
+    GR2_GPU_USER_DIR/TLG_GPU_USER_DIR move it (the more specific name wins)."""
+    return Path(os.environ.get('GR2_GPU_USER_DIR') or os.environ.get('TLG_GPU_USER_DIR') or USER_DIR)
+
+
 def shader_cache_size(settings):
     """Bytes of compiled shaders this game has on disk (launcher/shader_cache.py has the paths)."""
-    return shader_cache.size(shader_cache_serials(settings), USER_DIR)
+    return shader_cache.size(shader_cache_serials(settings), gpu_user_dir())
 
 
 def clear_shader_cache(settings):
     """Deletes this game's compiled shaders: the next start rebuilds them (longer load, some
     stutter at first). Saves, settings and logs stay. Returns (bytes freed, [(path, error)])."""
-    return shader_cache.clear(shader_cache_serials(settings), USER_DIR)
+    return shader_cache.clear(shader_cache_serials(settings), gpu_user_dir())
 
 
 def python_command(script):
@@ -319,6 +325,9 @@ def build_env(settings, extra=None):
             env['LD_LIBRARY_PATH'] = libraries
         else:
             env.pop('LD_LIBRARY_PATH', None)
+    # Shaders and pipelines beside the saves (the GPU reads it when it starts; before, Linux used
+    # shadPS4's ~/.local/share/shadPS4 and Windows <saves>/user).
+    env['TLG_GPU_USER_DIR'] = str(gpu_user_dir())
     if extra:
         env.update(extra)
     return env

@@ -192,7 +192,8 @@ def main():
         env['TLG_DERIVED'] = ','.join(derived)
 
         # The in-game restart starts this script again once this process is gone.
-        # GPU caches (shaders, pipelines) beside the saves; read before main(), so set here.
+        # GPU caches (shaders, pipelines) beside the saves (path_util.cpp reads it when
+        # the GPU starts; set here too so the in-game restart and the tools agree).
         user_dir = Path(env.get('TLG_USER_DIR', data / 'user')).resolve()
         user_dir.mkdir(parents=True, exist_ok=True)
         env.setdefault('TLG_GPU_USER_DIR', str(user_dir))
