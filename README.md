@@ -36,7 +36,7 @@ Por **HayatoG** · YouTube [@hayatog-dev](https://www.youtube.com/@hayatog-dev) 
 - **Analógicos:** zona morta de 10% contra drift (`TLG_STICK_DEADZONE`), e o último controle usado é o que vale.
 - **Touchpad sem touchpad:** segure View/Select (ou Tab) e mova o analógico direito (ou as setas) para deslizar o dedo; um toque rápido continua sendo clique.
 - **Desempenho:** o FPS não cai mais com o tempo (as variantes de shader agora se repetem), e transições parciais de imagem repetidas são puladas.
-- **Cache de shaders automático:** a pasta do cache leva a versão do tradutor de shaders, e o cache antigo é apagado sozinho depois de uma atualização.
+- **Cache de shaders automático:** fica em `user/cache/`, junto dos saves (em Linux e Windows; o cache antigo de `~/.local/share/shadPS4` ou `user/user/` é trazido sozinho na primeira partida). A pasta leva a versão do tradutor de shaders, e o cache antigo é apagado sozinho depois de uma atualização. Para recompilar tudo, o launcher tem o botão **Limpar cache de shaders** (ou `./run_gr2.sh --clear-shader-cache`); ele apaga só os shaders compilados deste jogo, nunca saves ou configurações.
 
 ## Status
 
@@ -155,7 +155,7 @@ The screenshots and the performance chart are at the top of this page.
 - **Sticks:** a 10% dead zone against drift (`TLG_STICK_DEADZONE`), and the last controller used is the one that counts.
 - **Touchpad without a touchpad:** hold View/Select (or Tab) and move the right stick (or the arrow keys) to swipe; a quick tap still clicks.
 - **Performance:** FPS no longer drops over time (shader variants are now reused), and repeated partial image transitions are skipped.
-- **Automatic shader cache:** the cache folder is keyed by the shader recompiler version, and the old cache is deleted on its own after an update.
+- **Automatic shader cache:** it lives in `user/cache/`, next to the saves (Linux and Windows; the old cache in `~/.local/share/shadPS4` or `user/user/` is moved over on the first start). The folder is keyed by the shader recompiler version, and the old cache is deleted on its own after an update. To rebuild everything, the launcher has a **Clear shader cache** button (or `./run_gr2.sh --clear-shader-cache`); it deletes only this game's compiled shaders, never saves or settings.
 
 ## Status
 

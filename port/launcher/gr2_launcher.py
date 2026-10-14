@@ -46,6 +46,17 @@ TEXT = {
     'play': ('Play', 'Jogar'),
     'saves': ('Saves folder', 'Pasta de saves'),
     'logs': ('Logs folder', 'Pasta de logs'),
+    'clear_cache': ('Clear shader cache', 'Limpar cache de shaders'),
+    'clear_cache_ask': ('This deletes the compiled shaders ({size}); the next start takes longer to load and '
+                        'may stutter at first. Continue?',
+                        'Isso apaga os shaders compilados ({size}); a próxima partida demora mais para carregar e '
+                        'pode engasgar no começo. Continuar?'),
+    'clear_cache_empty': ('The shader cache is already empty.', 'O cache de shaders já está vazio.'),
+    'clear_cache_done': ('Shader cache cleared: {size} freed.', 'Cache de shaders limpo: {size} liberados.'),
+    'clear_cache_failed': ('{size} freed, but {count} file(s) could not be deleted (in use? Close the game '
+                           'and try again).',
+                           '{size} liberados, mas {count} arquivo(s) não puderam ser apagados (em uso? Feche o '
+                           'jogo e tente de novo).'),
     'quit': ('Quit', 'Sair'),
     'ready': ('Ready to play.', 'Pronto para jogar.'),
     'audio_native': ('Audio: native (console module found).', 'Áudio: nativo (módulo do console encontrado).'),
@@ -206,6 +217,8 @@ class Launcher:
         self.play_button.pack(side='right', ipadx=30, ipady=8)
         ttk.Button(buttons, text=self.t('logs'), command=lambda: self.open(tlg_run.LOG_DIR)).pack(side='right', padx=6)
         ttk.Button(buttons, text=self.t('saves'), command=lambda: self.open(tlg_run.USER_DIR / 'savedata')).pack(side='right')
+        self.cache_button = ttk.Button(buttons, text=self.t('clear_cache'), command=self.clear_cache)
+        self.cache_button.pack(side='right', padx=(0, 6))
         self.refresh_status()
 
     def load_art(self):
@@ -277,6 +290,7 @@ class Launcher:
         audio = self.t('audio_native') if tlg_run.ngs2_module(self.settings) else self.t('audio_builtin')
         self.status.configure(text=f'{text}  {audio}')
         self.play_button.configure(state='disabled' if problems or self.process else 'normal')
+        self.cache_button.configure(state='disabled' if self.process else 'normal')
 
     def browse(self, key):
         path = filedialog.askdirectory(initialdir=self.vars[key].get() or str(Path.home()))
@@ -289,6 +303,32 @@ class Launcher:
             os.startfile(path)  # noqa: S606 (local folder)
         else:
             subprocess.Popen(['xdg-open', str(path)])
+
+    def clear_cache(self):
+        """Clear shader cache: asks first, never while the game runs; shows how much was freed."""
+        if self.process:
+            messagebox.showinfo(self.t('title'), self.t('already'))
+            return
+        size = tlg_run.shader_cache_size(self.settings)
+        if not size:
+            messagebox.showinfo(self.t('clear_cache'), self.t('clear_cache_empty'))
+            return
+        if not messagebox.askyesno(self.t('clear_cache'),
+                                   self.t('clear_cache_ask', size=tlg_run.shader_cache.human_size(size))):
+            return
+        try:
+            freed, failures = tlg_run.clear_shader_cache(self.settings)
+        except Exception as error:  # shown to the user, the launcher keeps running
+            messagebox.showerror(self.t('error'), str(error))
+            return
+        freed = tlg_run.shader_cache.human_size(freed)
+        if failures:
+            message = self.t('clear_cache_failed', size=freed, count=len(failures))
+            messagebox.showwarning(self.t('clear_cache'), message)
+        else:
+            message = self.t('clear_cache_done', size=freed)
+            messagebox.showinfo(self.t('clear_cache'), message)
+        self.append(message)
 
     def append(self, line):
         self.log.configure(state='normal')
@@ -305,6 +345,7 @@ class Launcher:
         self.changed()
         self.append(self.t('preparing'))
         self.play_button.configure(state='disabled')
+        self.cache_button.configure(state='disabled')
         threading.Thread(target=self.run_game, daemon=True).start()
 
     def run_game(self):
@@ -356,6 +397,8 @@ def main():
     args = sys.argv[1:]
     if args[:1] == ['--script'] and len(args) > 1:
         sys.exit(tlg_run.run_script(args[1:]))
+    if args[:1] == ['--clear-shader-cache']:
+        sys.exit(tlg_run.main(args))
     if args[:1] == ['--play']:
         sys.exit(tlg_run.main(args[1:]))
     root = tk.Tk(className='gr2-pc')  # matches StartupWMClass in the desktop entry
