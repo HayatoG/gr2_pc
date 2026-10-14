@@ -24,7 +24,7 @@ Tudo vem do **seu** PS4 (GoldHEN + Itemzflow). Nada disso vai no download. Use *
 | `Gravite2_Patch_Chunk0.psarc`, `Gravite2_Patch_Chunk1.psarc` | update 01.11 | 0,5 + 1,6 GB | correções do update |
 | `sce_discmap.plt`, `sce_discmap_patch.plt` | update 01.11 | pequenos | mapa de arquivos |
 
-**Do firmware do console (opcional, para ter som):** `libSceNgs2.sprx`, de `/system/common/lib/` do seu PS4. Ele vai na pasta `system_lib/` ao lado do executável.
+**Do firmware do console (opcional: sem ele, o port usa o seu próprio mixer de áudio, ainda experimental):** `libSceNgs2.sprx`, de `/system/common/lib/` do seu PS4. Ele vai na pasta `system_lib/` ao lado do executável.
 
 **Como montar a pasta:**
 1. No Itemzflow, faça o dump do jogo (`CUSA03694`) e do update (`CUSA03694-patch`) para um pendrive exFAT.
@@ -36,7 +36,7 @@ Tudo vem do **seu** PS4 (GoldHEN + Itemzflow). Nada disso vai no download. Use *
 ### Como jogar
 
 1. Extraia o pacote numa pasta qualquer (no Windows, fora do .zip).
-2. Coloque o `libSceNgs2.sprx` na pasta `system_lib/`, ao lado do executável (opcional, para ter som).
+2. Coloque o `libSceNgs2.sprx` na pasta `system_lib/`, ao lado do executável (opcional: sem ele, o port usa o seu próprio mixer de áudio, ainda experimental).
 3. Abra **Gravity Rush 2** (`Gravity Rush 2.exe` no Windows). No Windows, se aparecer "O Windows protegeu o computador", clique em *Mais informações* e depois em *Executar assim mesmo*. O programa não é assinado digitalmente.
 4. Em **Pasta do jogo**, escolha a pasta que tem o `eboot.bin`. Escolha o idioma e clique em **Jogar**.
 
@@ -48,7 +48,7 @@ No Linux, `./install_desktop.sh` adiciona o jogo ao menu de aplicativos.
 
 ### Problemas
 - **Linhas pretas perto dos personagens**: deixe ligada a opção "Desligar o contorno do geometry shader" no launcher (padrão).
-- **Jogo mudo**: falta o `libSceNgs2.sprx` em `system_lib/`.
+- **Som incompleto ou estranho**: sem o `libSceNgs2.sprx` em `system_lib/`, o port usa o seu próprio mixer, ainda experimental. Com o arquivo, o áudio é o nativo.
 - **Não abre ou fecha sozinho**: mande o `out/last_run.log` no [Discord](https://discord.gg/UMkdMYZh9g) ou numa [issue](https://github.com/HayatoG/gr2_pc/issues).
 
 ---
@@ -69,7 +69,7 @@ Everything comes from **your own** PS4 (GoldHEN + Itemzflow). None of it is in t
 | `Gravite2_Patch_Chunk0.psarc`, `Gravite2_Patch_Chunk1.psarc` | update 01.11 | 0.5 + 1.6 GB | update fixes |
 | `sce_discmap.plt`, `sce_discmap_patch.plt` | update 01.11 | small | file map |
 
-**From the console firmware (optional, for audio):** `libSceNgs2.sprx`, from `/system/common/lib/` on your PS4. It goes in the `system_lib/` folder next to the executable.
+**From the console firmware (optional: without it, the port uses its own audio mixer, still experimental):** `libSceNgs2.sprx`, from `/system/common/lib/` on your PS4. It goes in the `system_lib/` folder next to the executable.
 
 **How to build the folder:**
 1. In Itemzflow, dump the game (`CUSA03694`) and the update (`CUSA03694-patch`) to an exFAT USB drive.
@@ -81,7 +81,7 @@ Everything comes from **your own** PS4 (GoldHEN + Itemzflow). None of it is in t
 ### How to play
 
 1. Extract the package anywhere (on Windows, outside the .zip).
-2. Put `libSceNgs2.sprx` in the `system_lib/` folder next to the executable (optional, for audio).
+2. Put `libSceNgs2.sprx` in the `system_lib/` folder next to the executable (optional: without it, the port uses its own audio mixer, still experimental).
 3. Open **Gravity Rush 2** (`Gravity Rush 2.exe` on Windows). On Windows, if "Windows protected your PC" appears, click *More info*, then *Run anyway*. The program is not digitally signed.
 4. Under **Game folder**, choose the folder that has `eboot.bin`. Pick the language and click **Play**.
 
@@ -93,7 +93,7 @@ On Linux, `./install_desktop.sh` adds the game to the applications menu.
 
 ### Problems
 - **Black streaks near characters**: keep "Turn off the geometry-shader outline" checked in the launcher (default).
-- **No sound**: `libSceNgs2.sprx` is missing from `system_lib/`.
+- **Incomplete or odd sound**: without `libSceNgs2.sprx` in `system_lib/`, the port uses its own mixer, still experimental. With the file, audio is native.
 - **Does not start or closes by itself**: send `out/last_run.log` on [Discord](https://discord.gg/UMkdMYZh9g) or in an [issue](https://github.com/HayatoG/gr2_pc/issues).
 
 ---

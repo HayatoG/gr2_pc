@@ -68,7 +68,7 @@ Cabeçalho: `u16 size; s16 next; u32 id`. `next` é o deslocamento em bytes até
 | 0x10000001 | ADD_WAVEFORM_BLOCKS | `void *data; u32 numBlocks; u32 flags; Block *blocks`; Block (32 B) = `u32 dataOffset, dataSize, numRepeats, numSkipSamples, numSamples, reserved; u64 userData` |
 | 0x10000005 | PITCH | `float ratio` (≈0.9–1.0) |
 | 0x10000006 | ENVELOPE | `u32 numPoints; u32 numReleasePoints; Point *points`; Point (12 B) = `u32 curve` (0/1/2), `u32 durationSamples`, `float height` |
-| 0x10000008 | CALLBACK de voz (só GR2, vozes 3D) | 0x28 B: função do sndx (FUN_0125f7c0) + user data. A cada render ela lê o PCM mono da voz e chama `sceAudio3dObjectSetAttributes`. Não apareceu nos 4 min rastreados [C estático] |
+| 0x10000008 | USER_FX do sampler (só GR2, vozes 3D) | 0x28 B: `handler` + 3 user data, mesmo layout do USER_FX do submixer [D, SDK]: função do sndx (FUN_0125f7c0). A cada render ela lê o PCM mono da voz e chama `sceAudio3dObjectSetAttributes`. Não apareceu nos 4 min rastreados [C estático] |
 | 0x10000009 | PEAK_METER (só GR2) | `u32 enable` |
 | 0x1000000a | FILTER | `u32 index, location, type, channelMask…; float freq, resonance(0.5), gain(1.0)` |
 
@@ -134,7 +134,20 @@ Arquivo novo `port/src/runtime_ngs2.c`, compartilhado pelos dois ports, ligado p
 
 Estimativa: etapas 1–3 em 2–3 semanas; 4–5 em mais 2–4.
 
-## 5. Como repetir o rastreio
+## 5. Implementação (etapas 1–3, 14/10/2026)
+
+`port/src/runtime_ngs2.c` (branch `feat/ngs2-hle`), sem nada de jogo dentro. Escolha: `TLG_NGS2=native` usa o `.sprx`; qualquer outro valor (o launcher manda `hle` quando o `.sprx` falta ou está desmarcado) usa o mixer próprio. Teste offline: `tests/test_ngs2.c` (`build.sh --test`).
+
+Achados novos [C]:
+- **Fim de voz no sndx** (TLG `0x1a85b0`, a função que imprime `VOICE_FINISHED`): depois de `VoiceGetState(h, &st, 0x30)`, a voz é dada como terminada **só quando o bit 0 (INUSE) de `stateFlags` cai**. `(flags & 0x22) == 2` (PLAYING sem EMPTY) marca "tocou"; PLAYING com **EMPTY (0x20)** conta falta de dados (stream atrasado). `numDecodedSamples`/`decodedDataSize` (st+0x10) e `envelopeHeight`/`peakHeight` são copiados para a voz do sndx.
+- **Matriz é "output-major"**: `level[out * canais_entrada + in]`. Prova: um exemplo de 48 níveis do GR2 tem 1,0 nos índices 0, 7, 14, 21, 28, 35 (identidade 6→8 com passo 7).
+- **Envelope**: cada ponto vai **até** `height` em `duration` amostras (o primeiro parte de 0; `duration` 0 = salto). Os pontos de release partem do nível atual; no fim do release a voz termina.
+- **Blocos ATRAC9 de stream**: `skip` 256 só no primeiro bloco; `dataSize` é múltiplo do superframe e `skip + numSamples` fecha superframes inteiros (ex.: 0x9000 B = 48 superframes de 768 B = 49152 amostras = 0x100 + 0xbf00). O stream usa dois buffers de 0x9000 alternados.
+- `configData` do ATRAC9 vem como u32 LE `0xfe7a17f0`: os bytes do LibAtrac9 são `fe 7a 17 f0` (ordem invertida).
+
+Estado: sampler (PCM, VAG/HEVAG com a tabela de 128 preditores, ATRAC9), blocos (fila, repetições, skip), pitch (Catmull-Rom), envelope, eventos, portas/matrizes/PATCH (rack = voz 0), submixer/reverb/custom/mastering em ordem de dependência, várias saídas (`OUTPUT`), USER_FX (chama a função do jogo, sem a trava do mixer). Guardados sem processar: filtros, compressor, distorção, I3DL2 (o reverb passa só o `dry`), chorus/delay (o custom passa a entrada). `TLG_NGS2_WAV=<arquivo>` grava a mixagem; `tools/ngs2_compare.py` compara níveis por canal com o `*_ref.wav`.
+
+## 6. Como repetir o rastreio
 
 ```
 TLG_NGS2=native TLG_NGS2_TRACE=~/decomp/ngs2_ref/x_trace.txt TLG_NGS2_TRACE_WAV=~/decomp/ngs2_ref/x_ref.wav <rodar o jogo>

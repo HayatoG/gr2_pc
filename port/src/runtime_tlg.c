@@ -1,10 +1,9 @@
 /* System-library functions first needed by The Last Guardian (CUSA03627 v1.03).
  *
- * Event flags are a complete implementation. NGS2 is a silent placeholder that lets the game's
- * sndx engine initialize and run (AudioOut still paces the audio thread); TLG_NGS2=native links
- * the firmware's NGS2 instead (see analysis/03_audio.md). Audio3d lives in runtime_gr2_audio3d.c.
- * Everything else is a small contract the game needs at boot: kernel queries, time-zone
- * conversion, PlayGo dialog, LoadExec.
+ * Event flags are a complete implementation. NGS2 is runtime_ngs2.c (TLG_NGS2=native links
+ * the firmware's NGS2 instead); Audio3d lives in runtime_gr2_audio3d.c. Everything else is a
+ * small contract the game needs at boot: kernel queries, time-zone conversion, PlayGo dialog,
+ * LoadExec.
  */
 #define _GNU_SOURCE
 #include "runtime.h"
@@ -261,61 +260,6 @@ static ABI int32_t playgo_dialog_status(void) { return DIALOG_STATUS_FINISHED; }
 static ABI int32_t playgo_dialog_result(int32_t *result) { if (result) *result=0; return 0; }
 static ABI int32_t playgo_dialog_term(void) { return 0; }
 
-/* ---- NGS2: silent placeholder ----
- * Handles are tagged heap objects so the game can keep and compare them; voices report "idle",
- * renders produce silence. No guest allocator is called. */
-#define NGS2_MAGIC UINT32_C(0x4e475332)
-#define NGS2_INVALID ((int32_t)0x804A0106)
-typedef struct { uint32_t magic, kind, rack_id, index; } Ngs2Handle;
-typedef struct { void *host_buffer; uint64_t host_size; uintptr_t reserved[5]; uintptr_t user_data; } Ngs2BufferInfo;
-typedef struct { void *buffer; uint64_t size; uint32_t waveform, channels; } Ngs2RenderBuffer;
-static Ngs2Handle *ngs2_new(uint32_t kind,uint32_t rack_id,uint32_t index) {
-    Ngs2Handle *h=calloc(1,sizeof(*h));
-    if (h) *h=(Ngs2Handle){NGS2_MAGIC,kind,rack_id,index};
-    return h;
-}
-static int ngs2_valid(const Ngs2Handle *h,uint32_t kind) { return h && h->magic==NGS2_MAGIC && h->kind==kind; }
-static ABI int32_t ngs2_system_create(const void *option,const void *allocator,Ngs2Handle **out) {
-    (void)option; (void)allocator;
-    if (!out || !(*out=ngs2_new(1,0,0))) return NGS2_INVALID;
-    once("NGS2 system (silent)"); return 0;
-}
-static ABI int32_t ngs2_system_destroy(Ngs2Handle *h,Ngs2BufferInfo *info) {
-    if (!ngs2_valid(h,1)) return NGS2_INVALID;
-    if (info) memset(info,0,sizeof(*info));
-    h->magic=0; free(h); return 0;
-}
-static ABI int32_t ngs2_render(Ngs2Handle *h,const Ngs2RenderBuffer *buffers,uint32_t count) {
-    if (!ngs2_valid(h,1) || (count && !buffers)) return NGS2_INVALID;
-    for (uint32_t i=0;i<count;++i) if (buffers[i].buffer) memset(buffers[i].buffer,0,buffers[i].size);
-    return 0;
-}
-static ABI int32_t ngs2_query_buffer(uint32_t rack_id,const void *option,Ngs2BufferInfo *info) {
-    (void)rack_id; (void)option;
-    if (!info) return NGS2_INVALID;
-    memset(info,0,sizeof(*info)); info->host_size=4096; return 0;
-}
-static ABI int32_t ngs2_rack_create(Ngs2Handle *system,uint32_t rack_id,const void *option,const void *buffer,Ngs2Handle **out) {
-    (void)option; (void)buffer;
-    if (!ngs2_valid(system,1) || !out || !(*out=ngs2_new(2,rack_id,0))) return NGS2_INVALID;
-    return 0;
-}
-static ABI int32_t ngs2_rack_destroy(Ngs2Handle *h,Ngs2BufferInfo *info) {
-    if (!ngs2_valid(h,2)) return NGS2_INVALID;
-    if (info) memset(info,0,sizeof(*info));
-    h->magic=0; free(h); return 0; /* voice handles of this rack are leaked on purpose */
-}
-static ABI int32_t ngs2_voice_handle(Ngs2Handle *rack,uint32_t index,Ngs2Handle **out) {
-    if (!ngs2_valid(rack,2) || !out || !(*out=ngs2_new(3,rack->rack_id,index))) return NGS2_INVALID;
-    return 0;
-}
-static ABI int32_t ngs2_voice_control(Ngs2Handle *voice,const void *params) {
-    (void)params; return ngs2_valid(voice,3) ? 0 : NGS2_INVALID;
-}
-static ABI int32_t ngs2_voice_state(Ngs2Handle *voice,void *state,uint64_t size) {
-    if (!ngs2_valid(voice,3) || !state) return NGS2_INVALID;
-    memset(state,0,size); return 0; /* stateFlags 0: voice idle */
-}
 
 static const RuntimeExport exports[]={
     {"sceKernelCreateEventFlag",ef_create}, {"sceKernelDeleteEventFlag",ef_delete},
@@ -336,23 +280,7 @@ static const RuntimeExport exports[]={
     {"scePlayGoDialogInitialize",playgo_dialog_init}, {"scePlayGoDialogOpen",playgo_dialog_open},
     {"scePlayGoDialogUpdateStatus",playgo_dialog_status}, {"scePlayGoDialogGetResult",playgo_dialog_result},
     {"scePlayGoDialogTerminate",playgo_dialog_term},
-    {"sceNgs2SystemCreateWithAllocator",ngs2_system_create}, {"sceNgs2SystemDestroy",ngs2_system_destroy},
-    {"sceNgs2SystemRender",ngs2_render}, {"sceNgs2RackQueryBufferSize",ngs2_query_buffer},
-    {"sceNgs2RackCreate",ngs2_rack_create}, {"sceNgs2RackCreateWithAllocator",ngs2_rack_create},
-    {"sceNgs2RackDestroy",ngs2_rack_destroy}, {"sceNgs2RackGetVoiceHandle",ngs2_voice_handle},
-    {"sceNgs2VoiceControl",ngs2_voice_control}, {"sceNgs2VoiceGetState",ngs2_voice_state},
 };
-/* TLG_NGS2=native: libSceNgs2.sprx from the user's console firmware is linked as a module
- * (run_tlg.sh), so its exports must win over the silent placeholders above. */
-static int ngs2_native(void) {
-    static int value = -1;
-    if (value < 0) { const char *v = getenv("TLG_NGS2"); value = v && !strcmp(v, "native"); }
-    return value;
-}
 uintptr_t runtime_tlg_resolve(const char *name) {
-    if (ngs2_native()) {
-        const char *symbol = runtime_symbol(name);
-        if (symbol && !strncmp(symbol, "sceNgs2", 7)) return 0;
-    }
     return RUNTIME_LOOKUP(exports,name);
 }

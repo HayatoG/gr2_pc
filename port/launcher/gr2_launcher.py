@@ -49,7 +49,8 @@ TEXT = {
     'quit': ('Quit', 'Sair'),
     'ready': ('Ready to play.', 'Pronto para jogar.'),
     'audio_native': ('Audio: native (console module found).', 'Áudio: nativo (módulo do console encontrado).'),
-    'audio_silent': ('Audio: silent (libSceNgs2.sprx not found).', 'Áudio: mudo (libSceNgs2.sprx não encontrado).'),
+    'audio_builtin': ('Audio: built-in mixer, experimental (libSceNgs2.sprx not found or not selected).',
+                      'Áudio: mixer próprio, experimental (libSceNgs2.sprx não encontrado ou desmarcado).'),
     'missing': ('Missing', 'Faltando'),
     'not_built': ('Port not built (run build.sh)', 'Port não compilado (rode o build.sh)'),
     'preparing': ('Preparing the game…', 'Preparando o jogo…'),
@@ -273,7 +274,7 @@ class Launcher:
                              for k, d in problems)
         else:
             text = self.t('ready')
-        audio = self.t('audio_native') if tlg_run.ngs2_module(self.settings) else self.t('audio_silent')
+        audio = self.t('audio_native') if tlg_run.ngs2_module(self.settings) else self.t('audio_builtin')
         self.status.configure(text=f'{text}  {audio}')
         self.play_button.configure(state='disabled' if problems or self.process else 'normal')
 
