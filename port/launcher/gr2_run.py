@@ -192,12 +192,31 @@ def prepare(settings, log=print):
 ISA_TABLE = OUT_DIR / 'isa-rewrite.bin'
 
 
-def cpu_missing_sets():
-    """Instruction sets `tlg-probe --cpu-features` reports missing ([] when complete). A CPU that
-    lacks a set nothing can rewrite (AVX and older) stops here (exit 20) with the probe's reason."""
+def probe_env():
+    """The environment tlg-probe needs to start: on Linux the libraries packaged with the port
+    (SDL3, FFmpeg, ...) live in out/lib, and the frozen launcher's own LD_LIBRARY_PATH (PyInstaller's
+    _internal) is replaced by the one it had at start."""
+    env = os.environ.copy()
+    if os.name != 'nt':
+        original = env.pop('LD_LIBRARY_PATH_ORIG', None) if FROZEN else env.get('LD_LIBRARY_PATH')
+        bundled = OUT_DIR / 'lib'
+        paths = [str(bundled)] if bundled.is_dir() else []
+        if original:
+            paths.append(original)
+        if paths:
+            env['LD_LIBRARY_PATH'] = os.pathsep.join(paths)
+        else:
+            env.pop('LD_LIBRARY_PATH', None)
+    return env
+
+
+def cpu_missing_sets(log=print):
+    """Instruction sets `tlg-probe --cpu-features` reports missing ([] when complete); None when the
+    probe could not tell (it did not start: the table is then built anyway, see isa_table). A CPU
+    that lacks a set nothing can rewrite (AVX and older) stops here (exit 20) with the probe's reason."""
     try:
         result = subprocess.run([str(PROBE), '--cpu-features'], stdin=subprocess.DEVNULL, capture_output=True,
-                                text=True, timeout=30, creationflags=NO_WINDOW)
+                                text=True, timeout=30, creationflags=NO_WINDOW, env=probe_env())
     except (OSError, subprocess.SubprocessError):
         return []  # no probe yet: check_game reports it
     if result.returncode == 20:
@@ -205,7 +224,14 @@ def cpu_missing_sets():
     for line in result.stdout.splitlines():
         if line.startswith('CPU: missing '):
             return [name.strip() for name in line[len('CPU: missing '):].split(',') if name.strip()]
-    return []
+        if line.startswith('CPU: complete'):
+            return []
+    # Linux players with Intel CPUs met this: the probe could not load its libraries, so the CPU
+    # looked complete, no table was built and the game stopped ("no rewrite table matches").
+    detail = (result.stderr or result.stdout).strip().splitlines()
+    log(f'CPU check failed (exit {result.returncode}): {detail[-1] if detail else "no output"}; '
+        'building the instruction rewrite table anyway')
+    return None
 
 
 def isa_table(log=print):
@@ -216,8 +242,9 @@ def isa_table(log=print):
     is still accepted. A failed table is reported and the probe then explains what is missing."""
     ISA_TABLE.unlink(missing_ok=True)  # always matches the boot-linked.bin just written
     policy = os.environ.get('GR2_ISA_REWRITE') or os.environ.get('TLG_ISA_REWRITE') or ''
-    missing = cpu_missing_sets()
-    if not ((policy and policy != '0') or (policy != '0' and missing)):
+    missing = cpu_missing_sets(log)
+    # None (unknown) builds it too: the probe only rewrites the sets this CPU really lacks.
+    if not ((policy and policy != '0') or (policy != '0' and (missing is None or missing))):
         return
     scripts = PORT_DIR / 'scripts'
     result = subprocess.run([*python_command(scripts / 'isa_rewrite.py'), str(OUT_DIR / 'boot-linked.bin'),
@@ -263,9 +290,12 @@ def build_env(settings, extra=None):
     restart = f'"{sys.executable}" --play' if FROZEN else f'"{sys.executable}" "{Path(__file__).resolve()}"'
     env.setdefault('TLG_RESTART_COMMAND', restart)
     # Linux package: the libraries built with the port (SDL3, FFmpeg, ...) are in out/lib.
-    bundled = OUT_DIR / 'lib'
-    if os.name != 'nt' and bundled.is_dir():
-        env['LD_LIBRARY_PATH'] = os.pathsep.join(filter(None, [str(bundled), os.environ.get('LD_LIBRARY_PATH')]))
+    if os.name != 'nt':
+        libraries = probe_env().get('LD_LIBRARY_PATH')
+        if libraries:
+            env['LD_LIBRARY_PATH'] = libraries
+        else:
+            env.pop('LD_LIBRARY_PATH', None)
     if extra:
         env.update(extra)
     return env
