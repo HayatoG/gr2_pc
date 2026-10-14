@@ -138,10 +138,12 @@ static ABI int32_t ef_wait(EventFlag *ef,uint64_t pattern,uint32_t mode,uint64_t
     int32_t r=0;
     const int generation=ef->cancel_generation;
     ++ef->waiters;
+    runtime_wait_begin(timeout_us ? "event flag (timed)" : "event flag",ef,ef->name,NULL,RUNTIME_GUEST_FRAME());
     while (!ef->deleted && ef->cancel_generation==generation && !ef_match(ef->bits,pattern,mode)) {
         int e=timeout_us ? pthread_cond_timedwait(&ef->cond,&ef->lock,&deadline) : pthread_cond_wait(&ef->cond,&ef->lock);
         if (e==ETIMEDOUT) { r=KERR_ETIMEDOUT; break; }
     }
+    runtime_wait_end();
     --ef->waiters;
     if (ef->deleted) r=KERR_ESRCH;
     else if (ef->cancel_generation!=generation) { r=KERR_ECANCELED; if (result) *result=ef->bits; }

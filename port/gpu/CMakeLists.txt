@@ -287,6 +287,12 @@ if (WIN32)
     set_target_properties(isa-sse4a-test PROPERTIES C_STANDARD 11 C_EXTENSIONS OFF)
     target_compile_options(isa-sse4a-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
     target_include_directories(isa-sse4a-test PRIVATE .. ../src)
+    # tlg: the runtime memory table's reader-preferring lock (winpthreads' rwlock deadlocks nested readers).
+    add_executable(rwlock-rp-test EXCLUDE_FROM_ALL ../tests/test_rwlock_rp.c)
+    set_target_properties(rwlock-rp-test PROPERTIES C_STANDARD 11 C_EXTENSIONS OFF)
+    target_compile_options(rwlock-rp-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
+    target_include_directories(rwlock-rp-test PRIVATE ../src)
+    target_link_libraries(rwlock-rp-test PRIVATE -pthread)
     add_executable(tlg-gpu-capabilities ../tools/gpu_capabilities.c ../packaging/windows/tlg-gpu-capabilities.rc)
     target_link_libraries(tlg-gpu-capabilities PRIVATE Vulkan::Vulkan)
     # "Play The Last Guardian.exe": the game with the launcher's saved settings, no launcher window.
