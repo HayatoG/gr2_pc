@@ -8,6 +8,7 @@
 
 static int capture;
 int tlggpu_overlay_captures_input(void) { return capture; }
+void tlggpu_overlay_notice(const char *text, float seconds) { (void)text; (void)seconds; }
 uintptr_t runtime_lookup(const RuntimeExport *table, size_t count, const char *name) {
     (void)table; (void)count; (void)name;
     return 0;

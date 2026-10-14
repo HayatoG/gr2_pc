@@ -29,6 +29,7 @@ Por **HayatoG** · YouTube [@hayatog-dev](https://www.youtube.com/@hayatog-dev) 
 
 ## Novidades
 
+- **Processadores Intel:** o jogo não fecha mais logo no começo (instrução ilegal, `0xc000001d`). O processador do PS4 tem o SSE4A da AMD, que nenhum Intel tem, e o `eboot.bin` usa 96 `EXTRQ`. Agora o port reescreve essas instruções e as emula (junto com MOVBE, BMI1 e LZCNT, se faltarem) quando o processador não as tem. Em CPUs Ryzen nada muda.
 - **Launcher bilíngue** (português e inglês, automático ou escolhido), com o **idioma do jogo** (voz e texto) escolhido ali.
 - **Linhas pretas:** o contorno do geometry shader com adjacência, que gerava os traços pretos perto dos personagens, fica desligado por padrão ([`docs/BUG_LINHAS_PRETAS.md`](docs/BUG_LINHAS_PRETAS.md), [#1](https://github.com/HayatoG/gr2_pc/issues/1)).
 - **Sensor de movimento:** o giroscópio do DualShock 4/DualSense funciona direto. Em controles sem sensor, um toque em Share (ou L3+R3) liga o "modo sensor": o analógico esquerdo inclina o controle e X/A sacode. No teclado, T/G inclinam e Y sacode.
@@ -92,6 +93,8 @@ A lista completa, que também vai nas notas de cada Release, está em [`docs/ARQ
 2. Abra o **Gravity Rush 2**, escolha a pasta do jogo e o idioma do jogo (e, se quiser, o da interface), e clique em **Jogar**.
 3. No jogo, **F10** liga o contador de FPS, e **Insert** (ou R3 + L2 no controle) abre o menu do port.
 
+Variáveis de ambiente do port usam o prefixo `GR2_` (o nome antigo `TLG_` continua valendo; se os dois estiverem definidos, vale o `GR2_`). `GR2_ISA_REWRITE` controla a reescrita de instruções que o processador não tem: sem definir, só as que faltam (SSE4A em qualquer Intel); `0` nunca reescreve; `1` força todas (MOVBE, BMI1, LZCNT e SSE4A, para testar a emulação num Ryzen); ou uma lista, como `sse4a` ou `movbe,bmi1`. O log mostra `ISA: CPU lacks ...` ou `ISA: forced rewrite of N sites`.
+
 ## Compilar do código-fonte
 
 ```bash
@@ -145,6 +148,7 @@ The screenshots and the performance chart are at the top of this page.
 
 ## What's new
 
+- **Intel CPUs:** the game no longer dies right at the start (illegal instruction, `0xc000001d`). The PS4's processor has AMD's SSE4A, which no Intel CPU has, and `eboot.bin` uses 96 `EXTRQ`. The port now rewrites and emulates those instructions (and MOVBE, BMI1 and LZCNT, if missing) when the CPU lacks them. Nothing changes on Ryzen CPUs.
 - **Bilingual launcher** (Portuguese and English, automatic or chosen), where the **game language** (voice and text) is picked too.
 - **Black streaks:** the adjacency geometry-shader outline that drew black streaks near characters is off by default ([`docs/BUG_LINHAS_PRETAS.md`](docs/BUG_LINHAS_PRETAS.md), in Portuguese, [#1](https://github.com/HayatoG/gr2_pc/issues/1)).
 - **Motion sensor:** the DualShock 4/DualSense gyro works as is. On controllers without one, a tap on Share (or L3+R3) toggles "sensor mode": the left stick tilts the controller and cross/A shakes it. On the keyboard, T/G tilt and Y shakes.
@@ -203,6 +207,8 @@ The full list, which also goes in the notes of every Release, is in [`docs/ARQUI
 1. Extract the package and put `libSceNgs2.sprx` in the `system_lib/` folder.
 2. Open **Gravity Rush 2**, pick the game folder and the game language (and, if you like, the interface language), and click **Play**.
 3. In game, **F10** toggles the FPS counter, and **Insert** (or R3 + L2 on a controller) opens the port's menu.
+
+The port's environment variables use the `GR2_` prefix (the old `TLG_` name still works; when both are set, `GR2_` wins). `GR2_ISA_REWRITE` controls the rewrite of instructions the CPU lacks: unset, only the missing ones (SSE4A on any Intel CPU); `0` never rewrites; `1` forces them all (MOVBE, BMI1, LZCNT and SSE4A, to test the emulation on a Ryzen); or a list such as `sse4a` or `movbe,bmi1`. The log shows `ISA: CPU lacks ...` or `ISA: forced rewrite of N sites`.
 
 ## Building from source
 
