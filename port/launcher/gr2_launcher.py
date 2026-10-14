@@ -39,7 +39,8 @@ TEXT = {
     'vsync': ('VSync', 'VSync'),
     'show_fps': ('Show FPS overlay at start (F10 toggles)', 'Mostrar overlay de FPS ao iniciar (F10 alterna)'),
     'vram': ('Texture cache budget (MB of VRAM)', 'Orçamento do cache de texturas (MB de VRAM)'),
-    'vram_hint': ('5600 for 6 GB cards, 7000 for 8 GB', '5600 para placas de 6 GB, 7000 para 8 GB'),
+    'vram_hint': ('6 GB card: 5600 · 8 GB: 7000 · 12 GB: 10500 · 16 GB: 14000 · 24 GB: 21500. This is video card memory (VRAM), not RAM; never above your card\'s VRAM.',
+                  'Placa de 6 GB: 5600 · 8 GB: 7000 · 12 GB: 10500 · 16 GB: 14000 · 24 GB: 21500. É a memória da placa de vídeo (VRAM), não a RAM; nunca acima da VRAM da placa.'),
     'audio': ('Audio', 'Áudio'),
     'native_audio': ('Native audio (libSceNgs2.sprx from your console)', 'Áudio nativo (libSceNgs2.sprx do seu console)'),
     'play': ('Play', 'Jogar'),
@@ -185,7 +186,7 @@ class Launcher:
                            command=self.changed)
         spin.grid(row=3, column=1, sticky='w', padx=6, pady=(6, 0))
         spin.bind('<FocusOut>', lambda _: self.changed())
-        ttk.Label(video, text=self.t('vram_hint'), foreground='#777').grid(row=4, column=0, columnspan=2, sticky='w')
+        ttk.Label(video, text=self.t('vram_hint'), foreground='#777', wraplength=360).grid(row=4, column=0, columnspan=2, sticky='w')
 
         log_frame = ttk.LabelFrame(main, text='Log', padding=4)
         log_frame.grid(row=2, column=2, sticky='nsew', **pad)
