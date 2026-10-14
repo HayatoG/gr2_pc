@@ -190,21 +190,40 @@ jobs:
         run: |
           set -euo pipefail
           [[ -n "${DISCORD_WEBHOOK:-}" ]] || { echo "DISCORD_RELEASE_WEBHOOK not set"; exit 0; }
-          tag=${{ steps.publish.outputs.tag }}; kind="$tag"; color=5763719
+          tag=${{ steps.publish.outputs.tag }}; color=5763719
           short=${GITHUB_SHA::7}
-          msg=$(git log -1 --format=%s "$GITHUB_SHA" 2>/dev/null || echo "")
           downloads=$(gh release view "$tag" --json assets \
             --jq '[.assets[] | "• [\(.name)](\(.url))"] | join("\n")')
-          jq -n \
-            --arg title "🎮 $GAME: nova versão ($kind)" \
+          # The release notes as published on GitHub. Discord shows no Markdown tables, so each
+          # table row becomes a bullet (the header row and the |---| line are dropped).
+          gh release view "$tag" --json body --jq .body | tr -d '\r' | awk '
+            /^\|[-:| ]+\|$/ { next }
+            /^\|/ { if (!row) { row = 1; next }
+                    l = $0; gsub(/^\| *| *\|$/, "", l); gsub(/ *\| */, " · ", l); print "• " l; next }
+            { row = 0; print }' > notes.txt
+          # A Discord embed holds 4096 characters: split the notes between paragraphs into several
+          # posts. The first one carries the title and the downloads, the last one the commit.
+          jq -Rs \
+            --arg title "🎮 $GAME: nova versão ($tag)" \
             --arg url "$GITHUB_SERVER_URL/$GH_REPO/releases/tag/$tag" \
-            --arg desc "Commit \`$short\`: $msg" \
-            --arg dl "$downloads" \
-            --argjson color "$color" \
-            '{username: "Novas versões", embeds: [{title: $title, url: $url, description: $desc, color: $color,
-              fields: [{name: "Downloads", value: $dl}],
-              footer: {text: "Nenhum arquivo do jogo incluído: veja o README-player.md"}}]}' |
-            curl -fsS -H 'Content-Type: application/json' -d @- "$DISCORD_WEBHOOK"
+            --arg dl "$downloads" --arg commit "Commit $short" \
+            --argjson color "$color" --argjson max 3900 '
+            (reduce (sub("\n+$"; "") | split("\n\n")[]) as $p ([""];
+               if (.[-1] | length) == 0 then .[-1] = $p
+               elif ((.[-1] | length) + 2 + ($p | length)) <= $max then .[-1] += "\n\n" + $p
+               else . + [$p] end)
+             | [.[] | . as $s | range(0; ($s | length); $max) | $s[.:. + $max]]) as $parts
+            | ($parts | length) as $n
+            | [range(0; $n) as $i
+               | {username: "Novas versões", embeds: [
+                   {description: $parts[$i], color: $color}
+                   + (if $i == 0 then {title: $title, url: $url, fields: [{name: "Downloads", value: $dl}]} else {} end)
+                   + (if $i == $n - 1 then {footer: {text: $commit}} else {} end)]}]
+            | .[]' -c notes.txt > posts.jsonl
+          while read -r post; do
+            curl -fsS -H 'Content-Type: application/json' -d "$post" "$DISCORD_WEBHOOK"
+            sleep 1
+          done < posts.jsonl
       - name: Delete older builds
         # Only after the new release is live: the previous runs and their artifacts go, the
         # current run (the one that produced this release) stays. Releases are not touched,
