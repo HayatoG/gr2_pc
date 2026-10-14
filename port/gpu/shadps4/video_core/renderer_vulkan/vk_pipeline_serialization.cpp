@@ -33,8 +33,8 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 8u; // tlg: loop budgets (SotC)
-static constexpr u32 ShaderMetaVersion = 7u; // tlg: ImageResource::needs_native
+static constexpr u32 ShaderBinaryVersion = 9u; // tlg: loop budgets (SotC); SotC LDS barriers and S_WQM_B64
+static constexpr u32 ShaderMetaVersion = 8u; // tlg: ImageResource::needs_native; SotC LDS barriers and S_WQM_B64
 static constexpr u32 PipelineKeyVersion = 5u; // tlg: Info layout (ImageResource::needs_native)
 } // namespace Serialization
 
@@ -42,7 +42,7 @@ namespace Vulkan {
 
 namespace {
 // tlg: shaders recompiled under other recompiler switches (recompiler_toggles.h: the loop
-// budgets TLG_LOOP_LIMIT / TLG_LOOP_LIMIT_PER_LOOP) get their own shader binary cache version.
+// budgets TLG_LOOP_LIMIT / TLG_LOOP_LIMIT_PER_LOOP, TLG_LDS_SMALL/MULTI/READLANE, TLG_WQM) get their own shader binary cache version.
 u32 CurrentShaderBinaryVersion() {
     return Serialization::ShaderBinaryVersion + 64u * Shader::Toggles::ShaderBinarySalt();
 }

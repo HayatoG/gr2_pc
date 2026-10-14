@@ -360,6 +360,12 @@ target_include_directories(async-compiler-test PRIVATE shadps4)
 add_executable(warmup-inbox-test EXCLUDE_FROM_ALL ../tests/test_warmup_inbox.cpp)
 target_compile_options(warmup-inbox-test PRIVATE -UNDEBUG -Wall -Wextra -Werror)
 target_include_directories(warmup-inbox-test PRIVATE shadps4)
+# tlg: SotC recompiler fixes (LDS barriers, S_WQM_B64); see the test for its env runs.
+add_executable(recompiler-fixes-test EXCLUDE_FROM_ALL ../tests/test_recompiler_fixes.cpp
+    ../tests/test_gpu_runtime_stubs.cpp)
+target_include_directories(recompiler-fixes-test PRIVATE shim shadps4 third_party/gcn/include)
+target_compile_options(recompiler-fixes-test PRIVATE -UNDEBUG -fPIC)
+target_link_libraries(recompiler-fixes-test PRIVATE tlggpu)
 add_executable(async-pipeline-cache-test EXCLUDE_FROM_ALL ../tests/test_async_pipeline_cache.cpp)
 target_compile_options(async-pipeline-cache-test PRIVATE -UNDEBUG)
 target_include_directories(async-pipeline-cache-test PRIVATE shadps4)

@@ -57,7 +57,8 @@ static std::vector<const IR::Block*> FindDivergentLoops(const IR::Program& progr
     return divergent;
 }
 
-static std::vector<IR::Block*> FindUniformBlocks(const IR::Program& program) {
+// tlg: also used by SharedMemoryBarrierPass (a constant-lane ReadLane in these blocks is uniform).
+std::vector<IR::Block*> FindWave64UniformBlocks(const IR::Program& program) {
     using Type = IR::AbstractSyntaxNode::Type;
     const auto divergent_loops = FindDivergentLoops(program);
 
@@ -161,7 +162,7 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
 
     std::vector<IR::Inst*> worklist;
     std::vector<IR::Inst*> divergent_ballots;
-    const auto uniform_blocks = FindUniformBlocks(program);
+    const auto uniform_blocks = FindWave64UniformBlocks(program);
     for (IR::Block* block : program.blocks) {
         const bool is_uniform = std::ranges::contains(uniform_blocks, block);
         const auto push_worklist = [&](IR::Inst& inst) {
