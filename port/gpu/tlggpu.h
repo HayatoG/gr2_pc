@@ -58,6 +58,15 @@ void tlggpu_save_toast(int kind);
 int tlggpu_overlay_captures_input(void);
 /* A short message at the top of the screen (any thread). */
 void tlggpu_overlay_notice(const char *text, float seconds);
+/* Freeze report (src/runtime_freeze.c): the GPU library marks its blocking calls (event queue,
+ * GPU idle and vblank waits, GPU thread commands, readbacks, page faults) through these hooks. */
+typedef void (*TlgGpuWaitBegin)(const char *kind, const void *object, const char *name, uintptr_t frame);
+typedef void (*TlgGpuWaitEnd)(void);
+void tlggpu_set_wait_hooks(TlgGpuWaitBegin begin, TlgGpuWaitEnd end);
+/* Flip requests from the game, flips handed to the presenter, presents done, vblank ticks,
+ * page-protection faults being handled now and handled so far. */
+typedef struct { uint64_t submitted, shown, presented, vblanks, faults_in_progress, faults_handled; } TlgGpuFrameCounters;
+void tlggpu_frame_counters(TlgGpuFrameCounters *out);
 /* Number of symbols registered by the vendored libraries (diagnostics). */
 unsigned tlggpu_symbol_count(void);
 #ifdef __cplusplus
