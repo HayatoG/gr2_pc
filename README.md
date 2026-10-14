@@ -95,6 +95,10 @@ A lista completa, que também vai nas notas de cada Release, está em [`docs/ARQ
 
 Variáveis de ambiente do port usam o prefixo `GR2_` (o nome antigo `TLG_` continua valendo; se os dois estiverem definidos, vale o `GR2_`). `GR2_ISA_REWRITE` controla a reescrita de instruções que o processador não tem: sem definir, só as que faltam (SSE4A em qualquer Intel); `0` nunca reescreve; `1` força todas (MOVBE, BMI1, LZCNT e SSE4A, para testar a emulação num Ryzen); ou uma lista, como `sse4a` ou `movbe,bmi1`. O log mostra `ISA: CPU lacks ...` ou `ISA: forced rewrite of N sites`.
 
+## Solução de problemas
+
+**`Device lost during submit` (o jogo fecha com código 23 depois de um tempo, mais visto no Windows):** a placa ficou presa num shader e o sistema reiniciou a GPU (no Windows, o TDR depois de ~2 s). A causa mais comum é um laço de shader que termina no PS4 mas não no PC. Desde esta versão, todo laço de shader tem um limite de voltas: `GR2_LOOP_LIMIT_PER_LOOP` (padrão `8192` por laço, contado de novo a cada vez que o laço começa) e `GR2_LOOP_LIMIT` (padrão `262144` no total por execução do shader). Quando passa do limite, o laço é interrompido, e no pior caso um quadro sai errado em vez de o jogo fechar. Se ainda cair, tente valores menores (`GR2_LOOP_LIMIT_PER_LOOP=2048`); se algum efeito aparecer cortado (reflexo, sombra ou partícula incompleta), tente valores maiores. `0` desliga: `GR2_LOOP_LIMIT=0` desliga os dois limites, e `GR2_LOOP_LIMIT_PER_LOOP=0` só o de cada laço. O log mostra os valores em uso (`tlg: shader loop budget ...`), e o cache de shaders é refeito sozinho quando eles mudam.
+
 ## Compilar do código-fonte
 
 ```bash
@@ -209,6 +213,10 @@ The full list, which also goes in the notes of every Release, is in [`docs/ARQUI
 3. In game, **F10** toggles the FPS counter, and **Insert** (or R3 + L2 on a controller) opens the port's menu.
 
 The port's environment variables use the `GR2_` prefix (the old `TLG_` name still works; when both are set, `GR2_` wins). `GR2_ISA_REWRITE` controls the rewrite of instructions the CPU lacks: unset, only the missing ones (SSE4A on any Intel CPU); `0` never rewrites; `1` forces them all (MOVBE, BMI1, LZCNT and SSE4A, to test the emulation on a Ryzen); or a list such as `sse4a` or `movbe,bmi1`. The log shows `ISA: CPU lacks ...` or `ISA: forced rewrite of N sites`.
+
+## Troubleshooting
+
+**`Device lost during submit` (the game closes with exit code 23 after a while, mostly on Windows):** the GPU got stuck in a shader and the OS reset it (on Windows, TDR after ~2 s). The usual cause is a shader loop that ends on the PS4 but not on the PC. Since this version every shader loop has an iteration limit: `GR2_LOOP_LIMIT_PER_LOOP` (default `8192` per loop, counted again each time the loop starts) and `GR2_LOOP_LIMIT` (default `262144` in total per shader invocation). Past the limit the loop is cut short, so at worst one frame is wrong instead of the game closing. If it still crashes, try lower values (`GR2_LOOP_LIMIT_PER_LOOP=2048`); if some effect looks cut off (an incomplete reflection, shadow or particle), try higher ones. `0` turns them off: `GR2_LOOP_LIMIT=0` disables both limits, `GR2_LOOP_LIMIT_PER_LOOP=0` only the per-loop one. The log shows the values in use (`tlg: shader loop budget ...`), and the shader cache is rebuilt by itself when they change.
 
 ## Building from source
 

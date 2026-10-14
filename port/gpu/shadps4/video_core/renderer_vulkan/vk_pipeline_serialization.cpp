@@ -24,6 +24,7 @@
 #include "core/emulator_settings.h"
 #include "shader_recompiler/frontend/fetch_shader.h"
 #include "shader_recompiler/info.h"
+#include "shader_recompiler/recompiler_toggles.h"
 #include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/vk_instance.h"
 #include "video_core/renderer_vulkan/vk_pipeline_cache.h"
@@ -32,12 +33,20 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 7u; // tlg: interpolated integer fix (Pascal)
+static constexpr u32 ShaderBinaryVersion = 8u; // tlg: loop budgets (SotC)
 static constexpr u32 ShaderMetaVersion = 7u; // tlg: ImageResource::needs_native
 static constexpr u32 PipelineKeyVersion = 5u; // tlg: Info layout (ImageResource::needs_native)
 } // namespace Serialization
 
 namespace Vulkan {
+
+namespace {
+// tlg: shaders recompiled under other recompiler switches (recompiler_toggles.h: the loop
+// budgets TLG_LOOP_LIMIT / TLG_LOOP_LIMIT_PER_LOOP) get their own shader binary cache version.
+u32 CurrentShaderBinaryVersion() {
+    return Serialization::ShaderBinaryVersion + 64u * Shader::Toggles::ShaderBinarySalt();
+}
+} // namespace
 
 namespace PipelineBinaryCache {
 bool ValidKey(const Key& key) {
@@ -596,7 +605,7 @@ void RegisterShaderMeta(const Shader::Info& info,
     Serialization::Writer meta{ar};
 
     meta.Write(Serialization::ShaderMetaVersion);
-    meta.Write(Serialization::ShaderBinaryVersion);
+    meta.Write(CurrentShaderBinaryVersion());
 
     meta.Write(perm_hash);
     meta.Write(perm_idx);
@@ -631,7 +640,7 @@ bool LoadShaderMeta(Serialization::Archive& ar, Shader::Info& info,
 
     u32 binary_version{};
     meta.Read(binary_version);
-    if (binary_version != Serialization::ShaderBinaryVersion) {
+    if (binary_version != CurrentShaderBinaryVersion()) {
         return false;
     }
 
