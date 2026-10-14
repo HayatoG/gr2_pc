@@ -173,6 +173,34 @@ jobs:
           gh release view nightly --json tagName,isDraft,assets \
             --jq '"\(.tagName) draft=\(.isDraft) assets=\([.assets[].name] | join(","))"'
           [[ $(gh release view nightly --json isDraft --jq .isDraft) == false ]]
+      - name: Notify Discord
+        # Posts the new build (nightly or v*) to #chat-geral. A Discord failure never fails the build.
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
+          GAME: Gravity Rush 2
+        run: |
+          set -euo pipefail
+          [[ -n "${DISCORD_WEBHOOK:-}" ]] || { echo "DISCORD_RELEASE_WEBHOOK not set"; exit 0; }
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            tag=$GITHUB_REF_NAME; kind="Release $tag"; color=5763719
+          else
+            tag=nightly; kind="Nightly"; color=15105570
+          fi
+          short=${GITHUB_SHA::7}
+          msg=$(git log -1 --format=%s "$GITHUB_SHA" 2>/dev/null || echo "")
+          downloads=$(gh release view "$tag" --json assets \
+            --jq '[.assets[] | "• [\(.name)](\(.url))"] | join("\n")')
+          jq -n \
+            --arg title "🎮 $GAME: nova versão ($kind)" \
+            --arg url "$GITHUB_SERVER_URL/$GH_REPO/releases/tag/$tag" \
+            --arg desc "Commit \`$short\`: $msg" \
+            --arg dl "$downloads" \
+            --argjson color "$color" \
+            '{username: "Novas versões", embeds: [{title: $title, url: $url, description: $desc, color: $color,
+              fields: [{name: "Downloads", value: $dl}],
+              footer: {text: "Nenhum arquivo do jogo incluído: veja o README-player.md"}}]}' |
+            curl -fsS -H 'Content-Type: application/json' -d @- "$DISCORD_WEBHOOK"
       - name: Delete older builds
         # Only after the new nightly is live: the previous runs and their artifacts go, the
         # current run (the one that produced this nightly) stays. Releases are not touched,
