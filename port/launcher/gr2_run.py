@@ -20,6 +20,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import shader_cache
+
 # A packaged build (PyInstaller) keeps its folders next to the executable: scripts/, out/, user/.
 FROZEN = bool(getattr(sys, 'frozen', False))
 PORT_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent.parent
@@ -117,6 +119,27 @@ def update_ini(path, values):
             seen.add(key)
     lines += [f'{k}={v}' for k, v in values.items() if k not in seen]
     path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+
+# The serial the GPU backend names this game's shader cache after (another region's copy: its
+# param.sfo TITLE_ID, read from the game folder).
+SHADER_CACHE_SERIALS = ('CUSA03694',)
+
+
+def shader_cache_serials(settings):
+    serial = shader_cache.title_id(settings['game_dir']) if settings.get('game_dir') else None
+    return sorted({*SHADER_CACHE_SERIALS, *([serial] if serial else [])})
+
+
+def shader_cache_size(settings):
+    """Bytes of compiled shaders this game has on disk (launcher/shader_cache.py has the paths)."""
+    return shader_cache.size(shader_cache_serials(settings), USER_DIR)
+
+
+def clear_shader_cache(settings):
+    """Deletes this game's compiled shaders: the next start rebuilds them (longer load, some
+    stutter at first). Saves, settings and logs stay. Returns (bytes freed, [(path, error)])."""
+    return shader_cache.clear(shader_cache_serials(settings), USER_DIR)
 
 
 def python_command(script):
@@ -344,6 +367,12 @@ def main(argv=None):
     settings = load_settings()
     if os.environ.get('TLG_GAME_DIR'):
         settings['game_dir'] = os.environ['TLG_GAME_DIR']
+    if argv[:1] == ['--clear-shader-cache']:
+        freed, failures = clear_shader_cache(settings)
+        print(f'Cache de shaders: {shader_cache.human_size(freed)} liberados', flush=True)
+        for path, error in failures:
+            print(f'Não apagado (em uso? feche o jogo): {path}: {error}', file=sys.stderr)
+        return 1 if failures else 0
     if os.environ.get('TLG_NGS2') == 'hle':
         settings['native_audio'] = False
     problems = check_game(settings['game_dir'])
