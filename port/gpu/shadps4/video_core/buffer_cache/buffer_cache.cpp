@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <algorithm>
 #include <bit>
+#include <cstdio>
 #include <cstdlib>
 #include <magic_enum/magic_enum.hpp>
 #include "tlg_copy.h"
@@ -60,16 +61,28 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
       stream_buffer{instance, scheduler, MemoryType::Stream, STREAM_BUFFER_SIZE},
       gds_buffer{instance, 0, GDS_BUFFER_SIZE, MemoryType::Stream, "GDS Buffer"},
       memory_semaphore{instance} {
-    while (arena_page_bits > MIN_ARENA_PAGE_BITS &&
-           (u64{2} << arena_page_bits) > instance.GetMaxBufferSize()) {
-        --arena_page_bits;
+    // tlg: TLG_MAX_BUFFER_MB (GR2_MAX_BUFFER_MB) lowers the driver's buffer size limit as the arenas see it
+    // (diagnostics: reproduces AMD on Windows 2048, RADV 4095 on any GPU).
+    u64 max_buffer = instance.GetMaxBufferSize();
+    if (const char* forced = std::getenv("TLG_MAX_BUFFER_MB")) {
+        if (const u64 mb = std::strtoull(forced, nullptr, 10)) {
+            max_buffer = std::min<u64>(max_buffer, mb << 20);
+        }
+    }
+    // tlg: with a limit under two full pages (AMD on Windows 2 GiB, RADV ~4 GiB, Intel), pages
+    // are the smallest size and an arena joins as many as the limit allows: one inFAMOUS request
+    // of ~2.4 GiB (the cutscene before the graffiti) crossed three 1 GiB pages and stopped the
+    // game ("cannot span more than two VA arena pages", iss_pc #18).
+    if ((u64{2} << arena_page_bits) > max_buffer) {
+        arena_page_bits = MIN_ARENA_PAGE_BITS;
     }
     arena_page_size = u64{1} << arena_page_bits;
+    max_arena_pages = std::clamp<u64>(max_buffer >> arena_page_bits, 2, 16);
     num_arena_pages = u64{1} << (ADDRESS_SPACE_BITS - arena_page_bits);
-    if (arena_page_bits != MAX_ARENA_PAGE_BITS) {
-        LOG_INFO(Render_Vulkan, "Buffer arenas of {} MiB (driver buffer limit {} MiB)",
-                 arena_page_size >> 20, instance.GetMaxBufferSize() >> 20);
-    }
+    std::printf("GPU: buffer arenas of %llu MiB, up to %llu pages (driver buffer limit %llu MiB)\n",
+                static_cast<unsigned long long>(arena_page_size >> 20),
+                static_cast<unsigned long long>(max_arena_pages),
+                static_cast<unsigned long long>(max_buffer >> 20));
     const vk::BufferCreateInfo probe_ci = {
         .flags =
             vk::BufferCreateFlagBits::eSparseBinding | vk::BufferCreateFlagBits::eSparseResidency,
@@ -410,53 +423,54 @@ void BufferCache::SynchronizeDmaBuffers() {
 const Buffer* BufferCache::GetArena(u64 first_block, u64 last_block) {
     const u64 first_page = first_block >> blocks_per_arena_page_shift;
     const u64 last_page = last_block >> blocks_per_arena_page_shift;
-    ASSERT_MSG(last_page - first_page <= 1,
-               "Buffer request cannot span more than two VA arena pages");
-
-    const auto* first_arena = address_space[first_page];
-    const auto* last_arena = address_space[last_page];
-    if (first_arena == last_arena) {
-        if (!first_arena) {
-            const u64 base_block = Common::AlignDownPow2<u64>(first_block, blocks_per_arena_page);
-            const u64 num_pages = last_page - first_page + 1;
-            const auto* new_arena =
-                &arenas.emplace_back(instance, base_block << block_shift,
-                                     num_pages << arena_page_bits, MemoryType::Sparse);
-            address_space[first_page] = new_arena;
-            address_space[last_page] = new_arena;
+    // Arenas cover contiguous runs of pages: when both ends are in the same one, so is the rest.
+    if (const Buffer* arena = address_space[first_page]; arena && arena == address_space[last_page]) {
+        return arena;
+    }
+    // tlg: the pages the new arena covers: the request plus every arena it touches (an arena may
+    // join several pages, up to the driver's buffer limit).
+    u64 lo = first_page, hi = last_page;
+    for (u64 page = first_page; page <= last_page; ++page) {
+        if (const Buffer* arena = address_space[page]) {
+            lo = std::min<u64>(lo, arena->cpu_addr >> arena_page_bits);
+            hi = std::max<u64>(hi, ((arena->cpu_addr + arena->size_bytes) >> arena_page_bits) - 1);
         }
-        return address_space[first_page];
+    }
+    const u64 num_pages = hi - lo + 1;
+    // Over the driver's limit: the old code built such arenas too (two merged arenas could
+    // exceed it) and drivers accepted them, so warn instead of stopping.
+    if (num_pages > max_arena_pages) {
+        LOG_WARNING(Render, "Arena of {} pages of {} MiB exceeds the driver buffer limit "
+                    "(request {:#x}+{} MiB)", num_pages, arena_page_size >> 20,
+                    first_block << block_shift,
+                    ((last_block - first_block + 1) << block_shift) >> 20);
     }
 
-    LOG_WARNING(Render, "Migrating arena");
-
-    const u64 first_addr = first_arena ? first_arena->cpu_addr : (first_page << arena_page_bits);
-    const u64 first_size = first_arena ? first_arena->size_bytes : arena_page_size;
-    const u64 last_size = last_arena ? last_arena->size_bytes : arena_page_size;
-
-    const u64 base_block = first_addr >> block_shift;
-    const u64 total_size = first_size + last_size;
-    const u64 end_block = (first_addr + total_size) >> block_shift;
-    auto* new_arena = &arenas.emplace_back(instance, first_addr, total_size, MemoryType::Sparse);
-    auto* bind = BindsForArena(new_arena);
-    resident_ranges.ForEachInRange(base_block, end_block, [&](const Backing& backing) {
-        const u64 start = std::max(base_block, backing.start);
-        const u64 end = std::min(end_block, backing.end);
-        bind->binds.push_back(vk::SparseMemoryBind{
-            .resourceOffset = (start - base_block) << block_shift,
-            .size = (end - start) << block_shift,
-            .memory = backing.memory,
-            .memoryOffset = backing.offset + ((start - backing.start) << block_shift),
+    bool any_arena = false;
+    for (u64 page = lo; page <= hi; ++page) {
+        any_arena |= address_space[page] != nullptr;
+    }
+    const u64 base_addr = lo << arena_page_bits;
+    const u64 total_size = num_pages << arena_page_bits;
+    auto* new_arena = &arenas.emplace_back(instance, base_addr, total_size, MemoryType::Sparse);
+    if (any_arena) {
+        LOG_WARNING(Render, "Migrating arena ({} pages of {} MiB)", num_pages, arena_page_size >> 20);
+        const u64 base_block = base_addr >> block_shift;
+        const u64 end_block = (base_addr + total_size) >> block_shift;
+        auto* bind = BindsForArena(new_arena);
+        resident_ranges.ForEachInRange(base_block, end_block, [&](const Backing& backing) {
+            const u64 start = std::max(base_block, backing.start);
+            const u64 end = std::min(end_block, backing.end);
+            bind->binds.push_back(vk::SparseMemoryBind{
+                .resourceOffset = (start - base_block) << block_shift,
+                .size = (end - start) << block_shift,
+                .memory = backing.memory,
+                .memoryOffset = backing.offset + ((start - backing.start) << block_shift),
+            });
         });
-    });
-
-    u64 base_page = first_addr >> arena_page_bits;
-    for (u32 page = 0; page < (first_size >> arena_page_bits); ++page) {
-        address_space[base_page + page] = new_arena;
     }
-    base_page = last_page;
-    for (u32 page = 0; page < (last_size >> arena_page_bits); ++page) {
-        address_space[base_page + page] = new_arena;
+    for (u64 page = lo; page <= hi; ++page) {
+        address_space[page] = new_arena;
     }
     return new_arena;
 }
