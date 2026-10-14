@@ -6,7 +6,10 @@ Shared by the command line (run_gr2.sh -> `gr2_run.py [seconds]`) and the launch
 (gr2_launcher.py), so both start the game the same way:
   1. prepare.py / link_modules.py / content_profile.py build out/boot-linked.bin from the game
      folder (eboot + the game's libc, Fios2, JobManager and sysdata/libSceSecure, and
-     libSceNgs2.sprx from the console firmware when present: native audio);
+     libSceNgs2.sprx from the console firmware when present: native audio; otherwise the
+     built-in mixer, runtime_ngs2.c); on a CPU without the PS4's SSE4A/MOVBE/BMI1/LZCNT
+     (every Intel CPU lacks SSE4A) isa_rewrite.py writes out/isa-rewrite.bin, the
+     instruction sites tlg-probe emulates;
   2. the TLG defaults below become TLG_* environment variables (each one validated in play);
   3. tlg-probe runs with its output in out/logs/run-<date>.log (last_run.log points to it).
 """
@@ -182,7 +185,46 @@ def prepare(settings, log=print):
             raise RuntimeError(f'{name}: {result.stderr.strip() or result.stdout.strip()}')
         for line in result.stdout.splitlines():
             log(line)
+    isa_table(log)
     return modules
+
+
+ISA_TABLE = OUT_DIR / 'isa-rewrite.bin'
+
+
+def cpu_missing_sets():
+    """Instruction sets `tlg-probe --cpu-features` reports missing ([] when complete). A CPU that
+    lacks a set nothing can rewrite (AVX and older) stops here (exit 20) with the probe's reason."""
+    try:
+        result = subprocess.run([str(PROBE), '--cpu-features'], stdin=subprocess.DEVNULL, capture_output=True,
+                                text=True, timeout=30, creationflags=NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return []  # no probe yet: check_game reports it
+    if result.returncode == 20:
+        raise RuntimeError(result.stdout.strip() or 'this CPU cannot run the game')
+    for line in result.stdout.splitlines():
+        if line.startswith('CPU: missing '):
+            return [name.strip() for name in line[len('CPU: missing '):].split(',') if name.strip()]
+    return []
+
+
+def isa_table(log=print):
+    """ps4_core ISA rewrite (upstream gow3_pc #129): on a CPU without MOVBE, BMI1, LZCNT or SSE4A
+    (every Intel CPU: Gravity Rush 2 has 96 EXTRQ) the probe replaces those instructions in the
+    image, from the table scripts/isa_rewrite.py writes (iced-x86). GR2_ISA_REWRITE=1 (every set)
+    or a list such as GR2_ISA_REWRITE=sse4a builds it on any CPU (testing), =0 never; TLG_ISA_REWRITE
+    is still accepted. A failed table is reported and the probe then explains what is missing."""
+    ISA_TABLE.unlink(missing_ok=True)  # always matches the boot-linked.bin just written
+    policy = os.environ.get('GR2_ISA_REWRITE') or os.environ.get('TLG_ISA_REWRITE') or ''
+    missing = cpu_missing_sets()
+    if not ((policy and policy != '0') or (policy != '0' and missing)):
+        return
+    scripts = PORT_DIR / 'scripts'
+    result = subprocess.run([*python_command(scripts / 'isa_rewrite.py'), str(OUT_DIR / 'boot-linked.bin'),
+                             '--out', str(OUT_DIR)], cwd=str(scripts), capture_output=True, text=True,
+                            creationflags=NO_WINDOW)
+    for line in (result.stdout + result.stderr).splitlines():
+        log(line)
 
 
 def window_icon(settings):
@@ -207,6 +249,7 @@ def build_env(settings, extra=None):
     env['TLG_LANGUAGE'] = os.environ.get('TLG_LANGUAGE', str(GAME_LANGUAGES.get(settings['game_language'], 1)))
     if settings.get('ui_language', 'auto') != 'auto':
         env['TLG_UI_LANG'] = settings['ui_language']
+    # Without the console module the port's own mixer (runtime_ngs2.c) plays the audio.
     env['TLG_NGS2'] = 'native' if ngs2_module(settings) else 'hle'
     env['TLG_CONFIG'] = str(USER_DIR / 'tlg.ini')
     # Window name, app id (matches gr2-pc.desktop for Alt+Tab and the dock) and icon.
@@ -256,6 +299,8 @@ def launch(settings, seconds=0, extra_env=None):
     cmd = [str(PROBE), str(OUT_DIR / 'boot-linked.bin'), '--app0', settings['game_dir'],
            '--user', str(USER_DIR), '--content-profile', str(OUT_DIR / 'content.bin'),
            '--timeout', str(int(seconds))]
+    if ISA_TABLE.is_file():
+        cmd += ['--isa-rewrite', str(ISA_TABLE)]
     process = subprocess.Popen(cmd, cwd=str(USER_DIR), env=build_env(settings, extra_env),
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                encoding='utf-8', errors='replace', bufsize=1)

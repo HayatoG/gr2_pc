@@ -1,11 +1,13 @@
 # Arquivos do jogo (copyright da Sony/genDESIGN): NUNCA versionar
-/dump/
+/dump
 *.psarc
 *.bin
 *.prx
 *.sprx
 *.sfo
 *.plt
+# Exception: synthetic 448-byte x86 image for the ISA rewrite tests (upstream gow3_pc), no game code
+!port/tests/data/isa_fixture.bin
 
 # Ferramentas de terceiros (Ghidra, JDK, GhidraOrbis): instaladas localmente
 /tools/
@@ -25,6 +27,6 @@ __pycache__/
 # Saídas de build do port e dados locais do jogo preparados
 port/out/
 port/pgo/
-port/user/
-/game/
+port/user
+/game
 port/dist/
