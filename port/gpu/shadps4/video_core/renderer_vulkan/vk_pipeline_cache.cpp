@@ -89,6 +89,16 @@ constexpr static std::array DescriptorHeapSizes = {
     vk::DescriptorPoolSize{vk::DescriptorType::eSampler, 1024},
 };
 
+/// Logs shaders whose float atomic min/max run as integer atomics (no driver support): lets a
+/// log tell whether a game depends on that emulation (fork shadPS4-Infamous-FixBuild 32851afe).
+static void LogEmulatedFloatAtomics(const Shader::Info& info, const Shader::Profile& profile) {
+    if ((info.uses_buffer_atomic_float_min_max && !profile.supports_buffer_fp32_atomic_min_max) ||
+        (info.uses_image_atomic_float_min_max && !profile.supports_image_fp32_atomic_min_max)) {
+        LOG_INFO(Render_Vulkan, "{} shader {:#x} does float atomic min/max with integer atomics",
+                 info.hw_stage, info.pgm_hash);
+    }
+}
+
 static u32 MapOutputs(std::span<Shader::OutputMap, 3> outputs, const AmdGpu::VsOutputControl& ctl) {
     u32 num_outputs = 0;
 
@@ -554,6 +564,7 @@ bool PipelineCache::QueueShader(Program& program, HwStage stage, SwStage l_stage
         auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, build->runtime, *build->ir,
                                                     build->binding);
         DumpShader(build->code, build->info.pgm_hash, build->info.hw_stage, build->permutation, "bin");
+        LogEmulatedFloatAtomics(build->info, profile);
         DumpShader(spv, build->info.pgm_hash, build->info.hw_stage, build->permutation, "spv");
         auto patch = GetShaderPatch(build->info.pgm_hash, build->info.hw_stage,
                                     build->permutation, "spv");
@@ -1176,6 +1187,7 @@ vk::ShaderModule PipelineCache::CompileModule(Shader::Info& info, Shader::Runtim
 
     const auto ir_program = Shader::TranslateProgram(code, pools, info, runtime_info, profile);
     auto spv = Shader::Backend::SPIRV::EmitSPIRV(profile, runtime_info, ir_program, binding);
+    LogEmulatedFloatAtomics(info, profile);
     DumpShader(spv, info.pgm_hash, info.hw_stage, perm_idx, "spv");
 
     vk::ShaderModule module;
