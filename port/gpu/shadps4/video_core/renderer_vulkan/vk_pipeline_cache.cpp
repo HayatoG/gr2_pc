@@ -21,6 +21,7 @@
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/recompiler.h"
+#include "shader_recompiler/recompiler_toggles.h"
 #include "shader_recompiler/runtime_info.h"
 #include "tlg_settings.h"
 #include "video_core/amdgpu/liverpool.h"
@@ -414,6 +415,11 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         LOG_INFO(Render_Vulkan, "tlg: async graphics compilation ready ({} capture, {} compile workers)",
                  capture_count, count);
     }
+    // tlg: the shader loop budgets in force (0 = off); see recompiler_toggles.h.
+    LOG_INFO(Render_Vulkan,
+             "tlg: shader loop budget {} iterations per loop, {} per invocation "
+             "(TLG_LOOP_LIMIT_PER_LOOP, TLG_LOOP_LIMIT; 0 = off)",
+             Shader::Toggles::PerLoopBudget(), Shader::Toggles::LoopBudget());
 }
 
 PipelineCache::~PipelineCache() {
