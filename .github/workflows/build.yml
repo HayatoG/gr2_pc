@@ -1,6 +1,7 @@
-# Builds the Linux and Windows packages on every push to main and publishes them as the
-# "nightly" pre-release, replacing the previous one (release and tag). A tag v* publishes a
-# versioned release that is kept. No game or console file is ever built in or uploaded.
+# Builds the Linux and Windows packages on every push to main and publishes them as a new
+# release tagged vYYYY.MM.DD-<commit>, marked latest. Every release is kept as version history
+# (the old "nightly" release is removed). A pushed tag v* publishes that tag the same way.
+# No game or console file is ever built in or uploaded.
 name: Build
 
 on:
@@ -118,7 +119,7 @@ jobs:
 
   release:
     needs: [linux, windows]
-    # Only pushes publish (main -> nightly, v* tags -> versioned); pull requests stop at the artifacts.
+    # Only pushes publish (main -> vYYYY.MM.DD-<commit>, v* tags -> that tag); pull requests stop at the artifacts.
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     permissions:
@@ -137,6 +138,7 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Publish
+        id: publish
         run: |
           set -euo pipefail
           ls -la dist
@@ -153,28 +155,30 @@ jobs:
           # The list of game files the player needs (docs/ARQUIVOS_NECESSARIOS.md), before the download.
           sed '1,/^\[Português\]/d' docs/ARQUIVOS_NECESSARIOS.md >> notes.md
           if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            # Versioned releases are kept forever; nothing below ever deletes a v* release.
-            gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes-file notes.md --prerelease
-            exit 0
+            tag=$GITHUB_REF_NAME
+          else
+            tag="v$(date -u +%Y.%m.%d)-${short}"
           fi
-          # Nightly: upload everything into a draft first, so the previous nightly stays
-          # available until the new build is fully uploaded. A failure here leaves it untouched.
-          staging="nightly-staging-${GITHUB_RUN_ID}"
-          gh release create "$staging" dist/* --draft --target "$GITHUB_SHA" --prerelease \
-            --title "Nightly ($(date -u +%Y-%m-%d) · ${short})" --notes-file notes.md
-          n=$(gh release view "$staging" --json assets --jq '.assets | length')
-          [[ $n -ge 2 ]] || { echo "staging release has $n assets"; exit 1; }
-          # Swap: drop the old nightly and its tag, then publish the draft as "nightly".
-          gh release delete nightly --cleanup-tag --yes || true
+          # A re-run of the same commit finds its release already published: keep it.
+          if gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null | grep -qx false; then
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Upload into a draft first, so a failed upload never leaves a half-published release.
+          # Releases are kept forever as version history; nothing here deletes one.
+          gh release create "$tag" dist/* --draft --target "$GITHUB_SHA" \
+            --title "$tag ($(date -u +%Y-%m-%d) · ${short})" --notes-file notes.md
+          n=$(gh release view "$tag" --json assets --jq '.assets | length')
+          [[ $n -ge 2 ]] || { echo "draft release has $n assets"; exit 1; }
           for try in 1 2 3; do
-            gh release edit "$staging" --tag nightly --target "$GITHUB_SHA" --draft=false --prerelease && break
+            gh release edit "$tag" --draft=false --latest && break
             sleep 10
           done
-          gh release view nightly --json tagName,isDraft,assets \
-            --jq '"\(.tagName) draft=\(.isDraft) assets=\([.assets[].name] | join(","))"'
-          [[ $(gh release view nightly --json isDraft --jq .isDraft) == false ]]
+          [[ $(gh release view "$tag" --json isDraft --jq .isDraft) == false ]]
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          # The old rolling "nightly" release is gone: every build is now its own release.
+          gh release delete nightly --cleanup-tag --yes 2>/dev/null || true
       - name: Notify Discord
-        # Posts the new build (nightly or v*) to #chat-geral. A Discord failure never fails the build.
+        # Posts the new release to #chat-geral. A Discord failure never fails the build.
         continue-on-error: true
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
@@ -182,11 +186,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ -n "${DISCORD_WEBHOOK:-}" ]] || { echo "DISCORD_RELEASE_WEBHOOK not set"; exit 0; }
-          if [[ $GITHUB_REF == refs/tags/v* ]]; then
-            tag=$GITHUB_REF_NAME; kind="Release $tag"; color=5763719
-          else
-            tag=nightly; kind="Nightly"; color=15105570
-          fi
+          tag=${{ steps.publish.outputs.tag }}; kind="$tag"; color=5763719
           short=${GITHUB_SHA::7}
           msg=$(git log -1 --format=%s "$GITHUB_SHA" 2>/dev/null || echo "")
           downloads=$(gh release view "$tag" --json assets \
@@ -202,8 +202,8 @@ jobs:
               footer: {text: "Nenhum arquivo do jogo incluído: veja o README-player.md"}}]}' |
             curl -fsS -H 'Content-Type: application/json' -d @- "$DISCORD_WEBHOOK"
       - name: Delete older builds
-        # Only after the new nightly is live: the previous runs and their artifacts go, the
-        # current run (the one that produced this nightly) stays. Releases are not touched,
+        # Only after the new release is live: the previous runs and their artifacts go, the
+        # current run (the one that produced this release) stays. Releases are not touched,
         # apart from leftover nightly-staging drafts of failed runs.
         if: github.ref == 'refs/heads/main'
         run: |
