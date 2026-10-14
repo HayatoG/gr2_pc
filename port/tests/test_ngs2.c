@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "runtime.h"
 
 /* runtime_ngs2.c resolves through runtime_lookup; the tests call it by symbol instead. */
@@ -274,9 +275,10 @@ static void test_vag(void) {
     patch(w, 0, g.submixer);
     event(w, 0);
     render(&g);
-    float x0 = out8[0 * 8 + 2], x10 = out8[10 * 8 + 2];
-    printf("vag predictor 1: x0 %.5f x10 %.5f ratio %.4f (want %.4f)\n", x0, x10, x10 / x0, pow(0.9375, 10));
-    CHECK(fabs(x0 - 0.5) < 0.01, "impulse level");
+    /* Past the 64-sample start fade: x[k] = 0.5 * 0.9375^k. */
+    float x0 = out8[70 * 8 + 2], x10 = out8[80 * 8 + 2];
+    printf("vag predictor 1: x70 %.6f (want %.6f) x80/x70 %.4f (want %.4f)\n", x0, 0.5 * pow(0.9375, 70), x10 / x0, pow(0.9375, 10));
+    CHECK(fabs(x0 - 0.5 * pow(0.9375, 70)) < 0.0005, "impulse level");
     CHECK(fabs(x10 / x0 - pow(0.9375, 10)) < 0.02, "predictor decay");
     system_destroy(g.system, NULL);
 }
@@ -327,7 +329,9 @@ static void test_envelope_and_events(void) {
     render(&g);
     CHECK(rms(out8, GRAIN * 8) > 0.01, "resumed");
     event(v, 2);
+    render(&g);   /* STOP fades out over 64 samples in the next grain, then frees the voice */
     CHECK(flags_of(v) == 0, "STOP frees the voice");
+    CHECK(out8[100 * 8] == 0.0f && out8[10 * 8] != 0.0f, "stop fade then silence");
     render(&g);
     CHECK(rms(out8, GRAIN * 8) == 0.0, "stopped voice silent");
     event(v, 0);
@@ -463,6 +467,310 @@ static void test_atrac9_setup(void) {
     system_destroy(g.system, NULL);
 }
 
+
+/* ---- Effects ---- */
+/* One second of a float sine (amplitude `amp`) looping forever on sampler voice 1, front left. */
+static float tone_pcm[48000];
+static uintptr_t start_tone(const Graph *g, double freq, float amp, const float *levels, uintptr_t dest) {
+    for (int i = 0; i < 48000; ++i) tone_pcm[i] = amp * (float)sin(2 * M_PI * freq * i / 48000.0);
+    uintptr_t v;
+    voice_handle(g->sampler, 1, &v);
+    Block b = {0, sizeof(tone_pcm), UINT32_MAX, 0, 48000, 0, 0};
+    setup_sampler(v, 0x18, 1, 48000, 0);
+    add_blocks(v, tone_pcm, &b, 1);
+    matrix(v, 0, levels, 8);
+    u32s(v, 3, 0, 0);
+    patch(v, 0, dest);
+    event(v, 0);
+    return v;
+}
+static double level_after(const Graph *g, uint32_t warm, uint32_t measure, uint32_t ch, float *peak) {
+    static float buf[GRAIN * 400];
+    capture(g, buf, warm, ch);
+    capture(g, buf, measure, ch);
+    if (peak) { *peak = 0; for (uint32_t i = 0; i < measure * GRAIN; ++i) if (fabsf(buf[i]) > *peak) *peak = fabsf(buf[i]); }
+    return rms(buf, measure * GRAIN);
+}
+static void filter_param(uintptr_t voice, uint32_t id, uint32_t index, uint32_t type, float fc, float q, float level) {
+    struct { uint32_t index, location, type, mask; float fc, q, level, r0, r1, r2; } f = {index, 0, type, 0, fc, q, level, 0, 0, 0};
+    param(voice, id, &f, sizeof(f));
+}
+static const float front_left[8] = {1, 0, 0, 0, 0, 0, 0, 0};
+static double db(double x) { return 20 * log10(x + 1e-12); }
+
+static void test_filters(void) {
+    static const struct { uint32_t type; float fc, q, level; double freq, want_db, tol; const char *what; } cases[] = {
+        {1, 1000, 0.7071f, 1, 100, 0.0, 0.3, "LPF passband"}, {1, 1000, 0.7071f, 1, 8000, -37.8, 0.5, "LPF stopband"},
+        {2, 1000, 0.7071f, 1, 8000, 0.0, 0.3, "HPF passband"}, {2, 1000, 0.7071f, 1, 125, -36.1, 1.5, "HPF stopband"},
+        {8, 1000, 1.0f, 0.25f, 1000, -12.04, 0.3, "peaking EQ centre"}, {6, 150, 0.7071f, 0.178f, 20, -14.9, 0.8, "low shelf"},
+        {7, 4000, 0.7071f, 0.5f, 18000, -6.0, 0.6, "high shelf"}, {5, 1000, 2.0f, 1, 1000, -40.0, 20.0, "notch"},
+        {0, 1000, 0.5f, 1, 1000, 0.0, 0.01, "type 0 bypass"},
+    };
+    for (unsigned c = 0; c < sizeof(cases) / sizeof(*cases); ++c) {
+        Graph g = graph_new(1);
+        start_tone(&g, cases[c].freq, 0.5f, front_left, g.submixer);
+        double ref = level_after(&g, 20, 100, 0, NULL);
+        filter_param(g.sub_voice, 0x20000006, 0, cases[c].type, cases[c].fc, cases[c].q, cases[c].level);
+        double got = db(level_after(&g, 40, 100, 0, NULL) / ref);
+        printf("filter %-18s %6.0f Hz: %7.2f dB (want %6.2f)\n", cases[c].what, cases[c].freq, got, cases[c].want_db);
+        CHECK(cases[c].type == 5 ? got < cases[c].want_db + cases[c].tol : fabs(got - cases[c].want_db) <= cases[c].tol, "filter %s", cases[c].what);
+        system_destroy(g.system, NULL);
+    }
+    /* Sampler filter (0x1000000a) at location 0, and a per-port filter (location 2 = port 0). */
+    Graph g = graph_new(1);
+    uintptr_t v = start_tone(&g, 8000, 0.5f, front_left, g.submixer);
+    double ref = level_after(&g, 20, 100, 0, NULL);
+    filter_param(v, 0x1000000a, 1, 1, 1000, 0.7071f, 1);
+    double got = db(level_after(&g, 40, 100, 0, NULL) / ref);
+    struct { uint32_t index, location, type, mask; float fc, q, level, r0, r1, r2; } f = {1, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    param(v, 0x1000000a, &f, sizeof(f));
+    f.type = 1; f.location = 2; f.fc = 1000; f.q = 0.7071f; f.level = 1;
+    param(v, 0x1000000a, &f, sizeof(f));
+    double got_port = db(level_after(&g, 40, 100, 0, NULL) / ref);
+    printf("sampler filter: %.1f dB, port filter: %.1f dB (want ~-36)\n", got, got_port);
+    CHECK(got < -34 && got_port < -34, "sampler and port filters");
+    system_destroy(g.system, NULL);
+}
+
+static void test_dynamics(void) {
+    /* Compressor: thr 0.1, slope 0.25, attack 1 ms, release 10 ms: a 0.8 peak settles at 0.275. */
+    Graph g = graph_new(1);
+    start_tone(&g, 200, 0.8f, front_left, g.submixer);
+    struct { uint32_t flags; float thr, ratio, knee, attack, release, level; uint32_t reserved; } c = {0, 0.1f, 0.25f, 0, 0.001f, 0.01f, 1, 0};
+    param(g.sub_voice, 0x20000002, &c, sizeof(c));
+    float peak;
+    level_after(&g, 40, 100, 0, &peak);
+    printf("compressor: steady peak %.3f (want ~0.275)\n", peak);
+    CHECK(peak > 0.25f && peak < 0.31f, "compressor curve");
+    c.flags = 1;   /* bit 0 = bypass */
+    param(g.sub_voice, 0x20000002, &c, sizeof(c));
+    level_after(&g, 5, 100, 0, &peak);
+    CHECK(fabsf(peak - 0.8f) < 0.01f, "compressor bypass (%.3f)", peak);
+    system_destroy(g.system, NULL);
+
+    /* Mastering limiter at 1.0 on a 2.0 sine: settles at the threshold. */
+    g = graph_new(1);
+    start_tone(&g, 200, 2.0f, front_left, g.submixer);
+    static float buf[GRAIN * 200];
+    capture(&g, buf, 200, 0);
+    float early = 0, late = 0;
+    for (int i = 0; i < GRAIN * 4; ++i) if (fabsf(buf[i]) > early) early = fabsf(buf[i]);
+    for (int i = GRAIN * 20; i < GRAIN * 200; ++i) if (fabsf(buf[i]) > late) late = fabsf(buf[i]);
+    /* The console limiter has no look-ahead: block (32-sample) peak detection with 1 ms attack
+     * and 10 ms release smoothing lets peaks pass a few percent over the threshold. */
+    double steady = rms(buf + GRAIN * 20, GRAIN * 180);
+    printf("limiter: first 20 ms peak %.3f, steady peak %.3f, steady rms %.3f (threshold 1.0)\n", early, late, steady);
+    CHECK(late <= 1.08f && late > 0.95f && fabs(steady - 1 / sqrt(2)) < 0.05, "limiter holds the threshold");
+    system_destroy(g.system, NULL);
+
+    /* Mastering GAIN (full band 0.5) and the LFE low-pass (120 Hz) on channel 3. */
+    g = graph_new(1);
+    const float lfe_only[8] = {0, 0, 0, 1, 0, 0, 0, 0};
+    float gains[2] = {0.5f, 1.0f};
+    param(g.master_voice, 0x30000004, gains, 8);
+    start_tone(&g, 30, 0.5f, lfe_only, g.submixer);
+    double lfe30 = level_after(&g, 40, 100, 3, NULL);
+    start_tone(&g, 480, 0.5f, lfe_only, g.submixer);
+    double lfe480 = level_after(&g, 40, 100, 3, NULL);
+    start_tone(&g, 1000, 0.5f, front_left, g.submixer);
+    double fl = level_after(&g, 40, 100, 0, NULL);
+    printf("mastering: LFE 30 Hz %.2f dB, 480 Hz %.1f dB; FL with gain 0.5: %.2f dB\n", db(lfe30 / (0.5 / sqrt(2))),
+           db(lfe480 / (0.5 / sqrt(2))), db(fl / (0.5 / sqrt(2))));
+    CHECK(fabs(db(lfe30 / (0.5 / sqrt(2)))) < 0.6, "LFE passband");
+    CHECK(db(lfe480 / (0.5 / sqrt(2))) < -40, "LFE stopband");
+    CHECK(fabs(db(fl / (0.5 / sqrt(2))) + 6.02) < 0.1, "mastering gain");
+    system_destroy(g.system, NULL);
+}
+
+static void i3dl2(uintptr_t voice, float wet, float dry, int32_t room, int32_t room_hf, uint32_t pattern, float decay, float hf_ratio,
+                  int32_t reflections, float refl_delay, int32_t reverb, float rev_delay, float diffusion, float density, float hf_ref) {
+    struct { float wet, dry; int32_t room, room_hf; uint32_t pattern; float decay, ratio; int32_t refl; float refl_delay; int32_t rev;
+             float rev_delay, diffusion, density, hf_ref; uint32_t reserved[8]; } p = {wet, dry, room, room_hf, pattern, decay, hf_ratio,
+             reflections, refl_delay, reverb, rev_delay, diffusion, density, hf_ref, {0}};
+    param(voice, 0x20010001, &p, sizeof(p));
+}
+static void test_reverb(void) {
+    for (int pass = 0; pass < 2; ++pass) {
+        float decay = pass ? 2.5f : 1.0f;
+        Graph g = graph_new(1);
+        uint8_t option[0x88] = {0};
+        uintptr_t rv;
+        CHECK(rack_create(g.system, 0x2001, option, NULL, &rv) == 0, "reverb rack");
+        u32s(rv, 0x20010000, 8, 8);
+        i3dl2(rv, 1, 0, 0, 0, 0, decay, 1.0f, -10000, 0.01f, 0, 0.01f, 100, 100, 5000);
+        event(rv, 0);
+        patch(rv, 0, g.mastering);
+        uintptr_t v;
+        voice_handle(g.sampler, 2, &v);
+        static float click[480];
+        memset(click, 0, sizeof(click));
+        click[100] = 1.0f;
+        Block b = {0, sizeof(click), 0, 0, 480, 0, 0};
+        setup_sampler(v, 0x18, 1, 48000, 0);
+        add_blocks(v, click, &b, 1);
+        matrix(v, 0, front_left, 8);
+        u32s(v, 3, 0, 0);
+        patch(v, 0, rv);
+        event(v, 0);
+        enum { RENDERS = 600 };
+        static float ch[8][GRAIN * RENDERS];
+        for (uint32_t r = 0; r < RENDERS; ++r) {
+            render(&g);
+            for (uint32_t i = 0; i < GRAIN; ++i) for (int c = 0; c < 8; ++c) ch[c][r * GRAIN + i] = out8[i * 8 + c];
+        }
+        /* Energy decay of FL between 0.2 s and 0.8 s * decay. */
+        uint32_t w = 4800, a = (uint32_t)(0.2 * 48000 * decay), bb = (uint32_t)(0.8 * 48000 * decay);
+        double ea = 0, eb = 0;
+        for (uint32_t i = a; i < a + w; ++i) ea += ch[0][i] * ch[0][i];
+        for (uint32_t i = bb; i < bb + w; ++i) eb += ch[0][i] * ch[0][i];
+        double slope = 10 * log10(eb / ea) / ((double)(bb - a) / 48000.0), t60 = -60.0 / slope;
+        double lfe = 0, fc = 0;
+        for (uint32_t i = 0; i < GRAIN * RENDERS; ++i) { lfe += fabs(ch[3][i]); fc += fabs(ch[2][i]); }
+        printf("reverb decayTime %.1f s: measured T60 %.2f s, LFE sum %.3g, FC sum %.3g\n", decay, t60, lfe, fc);
+        CHECK(fabs(t60 - decay) < 0.25 * decay, "reverb decay time");
+        CHECK(lfe == 0.0 && fc > 0.0, "reverb channels");
+        system_destroy(g.system, NULL);
+    }
+}
+
+static void test_custom(void) {
+    Graph g = graph_new(1);
+    uint8_t option[0x4d8] = {0};
+    uintptr_t cr;
+    CHECK(rack_create(g.system, 0x4002, option, NULL, &cr) == 0, "custom rack");
+    u32s(cr, 0x40020000, 8, 8);
+    event(cr, 0);
+    patch(cr, 0, g.mastering);
+    /* Delay: one tap at 100 ms, wet only. */
+    struct { float dry, wet, gain, feedback, lowpass; uint32_t taps; float tap[16]; float in_gain[8]; uint32_t mask, flags; } d;
+    memset(&d, 0, sizeof(d));
+    d.dry = 0; d.wet = 1; d.gain = 1; d.feedback = 0; d.lowpass = 24000; d.taps = 1; d.tap[0] = 1.0f; d.tap[1] = 100.0f;
+    _Static_assert(sizeof(d) == 128, "delay param body");
+    param(cr, 0x40001d00, &d, sizeof(d));
+    uintptr_t v;
+    voice_handle(g.sampler, 2, &v);
+    static float click[480];
+    memset(click, 0, sizeof(click));
+    click[100] = 1.0f;
+    Block b = {0, sizeof(click), 0, 0, 480, 0, 0};
+    setup_sampler(v, 0x18, 1, 48000, 0);
+    add_blocks(v, click, &b, 1);
+    matrix(v, 0, front_left, 8);
+    u32s(v, 3, 0, 0);
+    patch(v, 0, cr);
+    event(v, 0);
+    static float fl[GRAIN * 40];
+    capture(&g, fl, 40, 0);
+    uint32_t at = 0;
+    for (uint32_t i = 0; i < GRAIN * 40; ++i) if (fabsf(fl[i]) > 0.5f) { at = i; break; }
+    printf("delay: click at 100 -> %u (want %u)\n", at, 100 + 4800);
+    CHECK(at == 4900, "delay tap time");
+
+    /* Chorus: one phase, 1 ms, no depth, wet only: a pure delay of D + 1 samples. */
+    struct { uint32_t pad, phases, mask; float gain, delay, rate, depth, feedback, wet, dry; } c = {0, 1, 0, 1, 1.0f, 1.0f, 0, 0, 1, 0};
+    param(cr, 0x40001c00, &c, sizeof(c));
+    d.dry = 1; d.wet = 0;   /* delay now passes its input through */
+    param(cr, 0x40001d00, &d, sizeof(d));
+    setup_sampler(v, 0x18, 1, 48000, 0);
+    add_blocks(v, click, &b, 1);
+    event(v, 0);
+    capture(&g, fl, 4, 0);
+    at = 0;
+    for (uint32_t i = 0; i < GRAIN * 4; ++i) if (fabsf(fl[i]) > 0.5f) { at = i; break; }
+    printf("chorus: click at 100 -> %u (want %u)\n", at, 100 + 49);
+    CHECK(at == 149, "chorus delay");
+    system_destroy(g.system, NULL);
+}
+
+static void test_envelope_curves(void) {
+    /* Curve 3 (S-curve) is halfway at the middle of its duration; curve 1 starts slowly. */
+    static const struct { uint32_t curve; double want; } cases[] = {{3, 0.5}, {1, (pow(10, 0.5) - 1) / 9}, {2, log10(5.5)}, {5, sin(M_PI / 4)}};
+    for (unsigned k = 0; k < sizeof(cases) / sizeof(*cases); ++k) {
+        Graph g = graph_new(1);
+        uintptr_t v;
+        voice_handle(g.sampler, 1, &v);
+        static float dc[48000];
+        for (int i = 0; i < 48000; ++i) dc[i] = 0.5f;
+        Block b = {0, sizeof(dc), 0, 0, 48000, 0, 0};
+        setup_sampler(v, 0x18, 1, 48000, 0);
+        add_blocks(v, dc, &b, 1);
+        EnvPoint points[2] = {{cases[k].curve, 9600, 1.0f}, {0, 480000, 1.0f}};
+        envelope(v, points, 2, 0);
+        matrix(v, 0, front_left, 8);
+        u32s(v, 3, 0, 0);
+        patch(v, 0, g.submixer);
+        event(v, 0);
+        static float buf[GRAIN * 40];
+        capture(&g, buf, 40, 0);
+        double mid = buf[4800] / 0.5;
+        printf("envelope curve %u: %.3f at the middle (want %.3f)\n", cases[k].curve, mid, cases[k].want);
+        CHECK(fabs(mid - cases[k].want) < 0.01, "envelope curve %u", cases[k].curve);
+        system_destroy(g.system, NULL);
+    }
+}
+
+/* Render cost of a TLG-sized graph: 40 submixers (2 filters + compressor), 6 I3DL2 reverbs,
+ * 6 custom delays, 96 playing voices with 4 sends each and filters. */
+static void test_perf(void) {
+    Graph g = graph_new(1);
+    uint8_t option[0x4d8] = {0};
+    uint32_t voices = 256;
+    memcpy(option + 0x20, &voices, 4);
+    uintptr_t sampler;
+    rack_create(g.system, 0x1000, option, NULL, &sampler);
+    voices = 1;
+    memcpy(option + 0x20, &voices, 4);
+    uintptr_t subs[40], revs[6], dels[6];
+    struct { uint32_t flags; float thr, ratio, knee, attack, release, level; uint32_t reserved; } comp = {0, 0.1f, 0.5f, 0, 0.01f, 0.1f, 1, 0};
+    for (int i = 0; i < 40; ++i) {
+        rack_create(g.system, 0x2000, option, NULL, &subs[i]);
+        u32s(subs[i], 0x20000000, 8, 0); event(subs[i], 0);
+        filter_param(subs[i], 0x20000006, 0, 6, 150, 0.8f, 0.2f);
+        filter_param(subs[i], 0x20000006, 1, 8, 700, 1.5f, 0.8f);
+        param(subs[i], 0x20000002, &comp, sizeof(comp));
+        patch(subs[i], 0, i ? subs[i / 2] : g.mastering);
+    }
+    for (int i = 0; i < 6; ++i) {
+        rack_create(g.system, 0x2001, option, NULL, &revs[i]);
+        u32s(revs[i], 0x20010000, 8, 8);
+        i3dl2(revs[i], 1, 0, 0, -167, 2, 3.0f, 0.23f, -1200, 0.125f, 1500, 0.0168f, 100, 95, 3086);
+        event(revs[i], 0); patch(revs[i], 0, subs[0]);
+        rack_create(g.system, 0x4002, option, NULL, &dels[i]);
+        u32s(dels[i], 0x40020000, 8, 8); event(dels[i], 0); patch(dels[i], 0, revs[i]);
+        struct { float dry, wet, gain, feedback, lowpass; uint32_t taps; float tap[16]; float in_gain[8]; uint32_t mask, flags; } d;
+        memset(&d, 0, sizeof(d));
+        d.wet = 1; d.gain = 1; d.feedback = 0.2f; d.lowpass = 2000; d.taps = 8; d.tap[0] = 1; d.tap[1] = 200; d.flags = 1;
+        for (int t = 1; t < 8; ++t) d.tap[2 * t + 1] = 1;
+        param(dels[i], 0x40001d00, &d, sizeof(d));
+    }
+    static float noise[48000];
+    for (int i = 0; i < 48000; ++i) noise[i] = (float)((i * 7919 % 2001) - 1000) / 4000.0f;
+    Block b = {0, sizeof(noise), UINT32_MAX, 0, 48000, 0, 0};
+    const float levels[8] = {0.5f, 0.5f, 0.2f, 0.1f, 0.3f, 0.3f, 0.1f, 0.1f};
+    for (uint32_t i = 0; i < 96; ++i) {
+        uintptr_t v;
+        voice_handle(sampler, i, &v);
+        setup_sampler(v, 0x18, 1, 44100 + i * 37, 0);
+        add_blocks(v, noise, &b, 1);
+        matrix(v, 0, levels, 8);
+        for (uint32_t p = 0; p < 4; ++p) { u32s(v, 3, p, 0); patch(v, p, p ? (p == 3 ? dels[i % 6] : revs[(i + p) % 6]) : subs[10 + i % 30]); }
+        filter_param(v, 0x1000000a, 0, 8, 700, 0.7f, 0.3f);
+        filter_param(v, 0x1000000a, 1, 7, 10000, 0.5f, 0.66f);
+        pitch(v, 0.97f);
+        event(v, 0);
+    }
+    for (int r = 0; r < 20; ++r) render(&g);
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    enum { RENDERS = 400 };
+    for (int r = 0; r < RENDERS; ++r) render(&g);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    double ms = ((double)(t1.tv_sec - t0.tv_sec) * 1e3 + (double)(t1.tv_nsec - t0.tv_nsec) / 1e6) / RENDERS;
+    printf("perf: %.3f ms per 256-frame render (%.1f%% of real time, one core)\n", ms, ms / (256.0 / 48.0) * 100.0);
+    CHECK(ms < 256.0 / 48.0 * 0.5, "render cost under half of real time");
+    system_destroy(g.system, NULL);
+}
+
 int main(void) {
 #define BIND(var, name) var = (__typeof__(var))runtime_ngs2_function(name); if (!var) { printf("missing %s\n", name); return 1; }
     BIND(system_create, "sceNgs2SystemCreateWithAllocator");
@@ -482,6 +790,12 @@ int main(void) {
     test_fx_and_order();
     test_trace_blocks();
     test_atrac9_setup();
+    test_filters();
+    test_dynamics();
+    test_reverb();
+    test_custom();
+    test_envelope_curves();
+    test_perf();
     printf(failures ? "ngs2-test: %d failures\n" : "ngs2-test: all passed\n", failures);
     return failures != 0;
 }

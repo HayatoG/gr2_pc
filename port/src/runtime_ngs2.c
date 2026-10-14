@@ -16,9 +16,13 @@
  *   - Submixer, reverb, custom and mastering voices are buses: inputs are summed, effects run,
  *     and the result goes on through their own ports. Buses are processed in dependency order
  *     each render. Mastering voices write the render buffers (output id = buffer index).
- *   - Filters, compressor, distortion, reverb, chorus and delay are parsed and stored but not
- *     processed yet: reverb racks pass only their dry part (sends are wet), custom racks pass
- *     their input through. User FX handlers (guest functions) are called.
+ *   - Effects follow the console module's processing (studied in the firmware binary, written
+ *     anew): RBJ biquads at locations 0 (input), 1 (after effects) and 2+p (port p only); the
+ *     compressor/limiter (32-sample peak or RMS blocks, slope curve, attack/release smoothing);
+ *     mastering LFE low-pass (4th-order 0.1 dB Chebyshev, 120 Hz by default), limiter at 1.0
+ *     and gain; I3DL2 reverb (early-reflection patterns, 16 damped combs mixed per channel,
+ *     4 allpasses, room HF); custom-rack chorus and multi-tap delay; envelope curves; 64-sample
+ *     fades on PLAY/STOP; port volume/matrix changes ramp over a grain. Distortion is not done.
  *   - VoiceGetState: sndx frees a voice when INUSE (bit 0) drops, so INUSE stays set from setup
  *     until the voice ends (blocks exhausted, release finished, STOP/KILL).
  *
@@ -27,8 +31,9 @@
  *   TLG_NGS2_LOG=1           unknown parameters, decoder errors, a summary every 30 s
  *   TLG_NGS2_WAV=<file>      writes render buffer 0 as float WAV (compare with the native mix)
  *   TLG_NGS2_USERFX=0        do not call the game's user FX handlers
- *   TLG_NGS2_REVERB=pass     reverb racks pass their input through instead of the dry part
- *   TLG_NGS2_CUSTOM=mute     custom racks (chorus/delay) output silence instead of their input
+ *   TLG_NGS2_REVERB=pass     reverb racks pass their input through unprocessed (debug)
+ *   TLG_NGS2_CUSTOM=mute     custom racks (chorus/delay) output silence (debug)
+ *   TLG_NGS2_DELAY_TYPE=0    custom delay on a mono downmix instead of per channel (the default)
  *
  * HEVAG coefficients: vgmstream (ISC license), src/coding/psv_decoder.c. */
 #define _GNU_SOURCE
@@ -39,6 +44,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <xmmintrin.h>
 #include "third_party/LibAtrac9/C/src/libatrac9.h"
 
 #define NGS2_OK 0
@@ -111,10 +118,75 @@ typedef struct System System;
 typedef struct Rack Rack;
 typedef struct Voice Voice;
 
-typedef struct { Voice *dest; uint32_t input, delay; float volume; int32_t matrix; } Port;
+/* A port's effective levels from the last render ramp to the new ones over the next grain,
+ * as the console module does (no zipper noise on volume/pan changes). */
+typedef struct { Voice *dest; uint32_t input, delay; float volume; int32_t matrix; int primed; float last[MAX_LEVELS]; } Port;
 typedef struct { const uint8_t *data; uint32_t size, repeats, skip, samples; uint64_t user; } Block;
 typedef struct { uint32_t count; float level[MAX_LEVELS]; } Matrix;
-typedef struct { uint32_t index, location, type, mask; float a, b, c, d, e; } Filter;
+
+/* Biquad filter module (sampler 0x1000000a, submixer 0x20000006). location 0 runs on the voice
+ * input, 1 after the effects, 2+p only on what port p sends. mask = channels left unfiltered. */
+typedef struct {
+    int used, dirty;
+    uint32_t location, type, mask;
+    float fc, q, level, direct[5];
+    float c[5];
+    float z[MAX_CH][4];      /* x1, x2, y1, y2 */
+} Biquad;
+
+/* Compressor (submixer 0x20000002) and the mastering limiter: block peak/RMS detector (32
+ * samples), static curve thr + (x - thr) * ratio, per-sample attack/release smoothing. */
+typedef struct {
+    int enabled, rms, link, dirty;
+    float threshold, ratio, knee, attack, release, level;
+    float attack_coef, release_coef;
+    float gain[MAX_CH];
+} Dynamics;
+
+/* I3DL2 reverb (0x20010001): early reflections from a pattern of taps, 16 damped combs mixed
+ * per output channel and decorrelated by 4 allpasses, room HF low-pass, wet/dry. */
+#define REVERB_COMBS 16
+#define REVERB_ALLPASS 4
+typedef struct {
+    float *line; uint32_t length, index;
+    float gain, lp_in, lp_state, damp_a, damp_b, shelf_a, shelf_b;
+    float fir_a, fir_b, x1;
+} Comb;
+typedef struct { float *line; uint32_t length, index; } Allpass;
+typedef struct {
+    int dirty;
+    float wet, dry, room, room_hf, decay_time, decay_hf_ratio, reflections, reflections_delay,
+          reverb, reverb_delay, diffusion, density, hf_reference;
+    uint32_t pattern;
+    float *er_line; uint32_t er_length, er_index;
+    uint32_t tap_delay[5]; float tap_gain[5];
+    float er_gain, late_gain, ap_coef, hf_k;
+    Comb comb[REVERB_COMBS];
+    Allpass ap[MAX_CH][REVERB_ALLPASS];
+    float hf_z[MAX_CH][2];
+    float *work;             /* mono, ER, late input, 16 comb outputs: (3 + 16) * MAX_GRAIN */
+} Reverb;
+
+/* Custom rack modules: chorus (0x40001c00) and multi-tap delay (0x40001d00). */
+#define CHORUS_LINE 4096
+typedef struct {
+    int used;
+    uint32_t mask, phases;
+    float gain, delay_ms, rate_hz, depth, feedback, dry, wet;
+    float phase;
+    uint32_t write;
+    float *line;             /* MAX_CH * 4 phases * CHORUS_LINE */
+} Chorus;
+typedef struct {
+    int used;
+    float dry, wet, gain, feedback, lowpass_hz;
+    uint32_t taps, flags, mask, type;
+    float tap_level[8], tap_ms[8];
+    float in_gain[MAX_CH];
+    uint32_t tap_delay[8];
+    float lp_coef, lp_state[MAX_CH];
+    float *line; uint32_t length, write;
+} Delay;
 
 typedef struct {
     /* Waveform */
@@ -141,6 +213,7 @@ typedef struct {
     uint32_t env_forward, env_release, env_segment, env_position;
     float env_start, env_level;
     int releasing;
+    int fade_in, stopping;   /* 64-sample fades on PLAY and STOP/KILL */
     /* State reported to the game */
     uint64_t decoded_samples, decoded_bytes, user;
     const void *waveform_pointer;
@@ -156,8 +229,7 @@ struct Voice {
     Port ports[MAX_PORTS];
     Matrix *matrices;
     float peak;
-    Filter filters[MAX_FILTERS];
-    uint32_t num_filters;
+    Biquad filters[MAX_FILTERS];
     UserFxHandler user_fx;
     uintptr_t user_fx_data[3];
     CallbackHandler callback;
@@ -167,12 +239,16 @@ struct Voice {
     /* Buses */
     float *input;           /* MAX_CH planar channels of MAX_GRAIN */
     int has_input;
-    float compressor[8];
-    float reverb[24];
-    float dry, wet;
-    uint32_t output_id, limiter, out_channels;
-    float limiter_threshold, gain_fbw, gain_lfe;
-    uint8_t custom[256];
+    int fed;                /* something was mixed into the input this render */
+    Dynamics compressor;
+    Reverb *reverb;
+    Chorus *chorus;
+    Delay *delay;
+    uint32_t output_id, out_channels;
+    /* Mastering: LFE low-pass on channel 3, limiter, per-channel gain */
+    int lfe_enabled; uint32_t lfe_fc; float lfe_c[2][5], lfe_z[2][4];
+    Dynamics limiter;
+    int gain_set; float gain[MAX_CH], gain_last[MAX_CH];
     int stopped;            /* bus: RELEASE/STOP/KILL received (buses never kicked still run) */
     /* Render order */
     int pending, visited;
@@ -205,7 +281,9 @@ static System *systems;
 static FILE *wav;
 static uint64_t wav_frames;
 static uint32_t wav_channels;
-static uint64_t stat_plays, stat_finished, stat_blocks, stat_errors, stat_user_fx, stat_starved;
+static uint64_t stat_plays, stat_finished, stat_blocks, stat_errors, stat_user_fx, stat_starved, stat_underruns;
+static double stat_render_ns, stat_render_max_ns;
+static uint64_t stat_render_count;
 
 static const float hevag_coefs[128][4] = {
     {0.0f, 0.0f, 0.0f, 0.0f},
@@ -373,6 +451,444 @@ static void note_unknown(uint32_t rack, uint32_t id, uint32_t size) {
     note("rack 0x%04x: parameter 0x%08x (%u bytes) stored but not processed", rack, id, size);
 }
 
+/* ---- DSP modules ----
+ * Behaviour follows the console module's processing (studied in the firmware binary): the same
+ * filter designs, curves, block sizes and parameter clamps, written anew here. */
+static float clampf(float x, float lo, float hi) { return x < lo ? lo : x > hi ? hi : x; }
+static float mb_to_gain(float mb) { return mb < -10000.0f ? 0.0f : powf(10.0f, mb / 2000.0f); }
+
+/* Biquad coefficients c = {b0, b1, b2, -a1, -a2} / a0 (RBJ designs; 0x20 = direct coefficients). */
+static void biquad_design(Biquad *f, uint32_t rate) {
+    float *c = f->c;
+    f->dirty = 0;
+    if (f->type == 0x20) { memcpy(c, f->direct, sizeof(f->direct)); return; }
+    if (f->type < 1 || f->type > 10) { c[0] = 1.0f; c[1] = c[2] = c[3] = c[4] = 0.0f; return; }
+    float x = f->fc / (float)rate;
+    float w = x < 0.001f ? 0.0062831853f : fminf(x, 0.49987f) * 6.2831855f;
+    float q = f->q < 0.0001f ? 0.0001f : fminf(f->q, 32.0f);
+    float s = sinf(w), cs = cosf(w);
+    float b0, b1, b2, a0, a1, a2;
+    switch (f->type) {
+    case 6: case 7: {   /* low / high shelf, level = linear gain */
+        float A = sqrtf(fmaxf(f->level, 0.0001f)), beta = sqrtf(A) / q * s;
+        if (f->type == 6) {
+            b0 = A * ((A + 1) - (A - 1) * cs + beta); b1 = 2 * A * ((A - 1) - (A + 1) * cs); b2 = A * ((A + 1) - (A - 1) * cs - beta);
+            a0 = (A + 1) + (A - 1) * cs + beta; a1 = -2 * ((A - 1) + (A + 1) * cs); a2 = (A + 1) + (A - 1) * cs - beta;
+        } else {
+            b0 = A * ((A + 1) + (A - 1) * cs + beta); b1 = -2 * A * ((A - 1) + (A + 1) * cs); b2 = A * ((A + 1) + (A - 1) * cs - beta);
+            a0 = (A + 1) - (A - 1) * cs + beta; a1 = 2 * ((A - 1) - (A + 1) * cs); a2 = (A + 1) - (A - 1) * cs - beta;
+        }
+        break;
+    }
+    case 8: {           /* peaking EQ */
+        float A = sqrtf(fmaxf(f->level, 0.0001f)), alpha = s / (2 * q);
+        b0 = 1 + alpha * A; b1 = -2 * cs; b2 = 1 - alpha * A; a0 = 1 + alpha / A; a1 = -2 * cs; a2 = 1 - alpha / A;
+        break;
+    }
+    case 9:             /* first-order low-pass */
+        b0 = b1 = s; b2 = 0; a0 = s + cs + 1; a1 = s - cs - 1; a2 = 0;
+        break;
+    case 10:            /* first-order high-pass */
+        b0 = cs + 1; b1 = -(cs + 1); b2 = 0; a0 = s + cs + 1; a1 = s - (cs + 1); a2 = 0;
+        break;
+    default: {          /* 1 LPF, 2 HPF, 3 BPF (skirt), 4 BPF (0 dB peak), 5 notch */
+        float alpha = s / (2 * q);
+        switch (f->type) {
+        case 2: b0 = b2 = (1 + cs) * 0.5f; b1 = -(1 + cs); break;
+        case 3: b0 = s * 0.5f; b1 = 0; b2 = -s * 0.5f; break;
+        case 4: b0 = alpha; b1 = 0; b2 = -alpha; break;
+        case 5: b0 = 1; b1 = -2 * cs; b2 = 1; break;
+        default: b0 = b2 = (1 - cs) * 0.5f; b1 = 1 - cs; break;
+        }
+        a0 = 1 + alpha; a1 = -2 * cs; a2 = 1 - alpha;
+        break;
+    }
+    }
+    c[0] = b0 / a0; c[1] = b1 / a0; c[2] = b2 / a0; c[3] = -a1 / a0; c[4] = -a2 / a0;
+}
+static void biquad_run(const float c[5], float z[4], const float *in, float *out, uint32_t n) {
+    float x1 = z[0], x2 = z[1], y1 = z[2], y2 = z[3];
+    for (uint32_t i = 0; i < n; ++i) {
+        float x = in[i], y = c[0] * x + c[1] * x1 + c[2] * x2 + c[3] * y1 + c[4] * y2;
+        x2 = x1; x1 = x; y2 = y1; y1 = y;
+        out[i] = y;
+    }
+    /* Flush denormals the recursion can reach in long silences. */
+    if (fabsf(y1) < 1e-20f) y1 = 0.0f;
+    if (fabsf(y2) < 1e-20f) y2 = 0.0f;
+    z[0] = x1; z[1] = x2; z[2] = y1; z[3] = y2;
+}
+/* Runs the voice's filters whose location is `location` from `in` into `out` (may alias). */
+static void filters_run(Voice *v, uint32_t location, float in[MAX_CH][MAX_GRAIN], float out[MAX_CH][MAX_GRAIN],
+                        uint32_t channels, uint32_t n) {
+    int copied = in == out;
+    for (int i = 0; i < MAX_FILTERS; ++i) {
+        Biquad *f = &v->filters[i];
+        if (!f->used || f->location != location) continue;
+        if (f->dirty) biquad_design(f, v->rack->system->rate);
+        for (uint32_t c = 0; c < channels; ++c) {
+            if (f->mask & (1u << c) || f->type == 0) { if (!copied) memcpy(out[c], in[c], n * sizeof(float)); continue; }
+            biquad_run(f->c, f->z[c], copied ? out[c] : in[c], out[c], n);
+        }
+        copied = 1;
+    }
+    if (!copied) for (uint32_t c = 0; c < channels; ++c) memcpy(out[c], in[c], n * sizeof(float));
+}
+static int filters_at(const Voice *v, uint32_t location) {
+    for (int i = 0; i < MAX_FILTERS; ++i) if (v->filters[i].used && v->filters[i].location == location) return 1;
+    return 0;
+}
+
+/* Dynamics: game flags bit 0 = bypass, bit 1 = RMS detector, bit 3 = link all but LFE. */
+static void dynamics_reset(Dynamics *d) { for (int c = 0; c < MAX_CH; ++c) d->gain[c] = 1.0f; }
+static void dynamics_run(Dynamics *d, uint32_t rate, float data[MAX_CH][MAX_GRAIN], uint32_t channels, uint32_t n) {
+    if (d->dirty) {
+        uint32_t a = (uint32_t)((float)rate * d->attack), r = (uint32_t)((float)rate * d->release);
+        d->attack_coef = a ? expf(-1.0f / (float)a) : 0.0f;
+        d->release_coef = r ? expf(-1.0f / (float)r) : 0.0f;
+        d->dirty = 0;
+    }
+    if (!d->enabled) { dynamics_reset(d); return; }
+    for (uint32_t start = 0; start < n; start += 32) {
+        uint32_t len = n - start < 32 ? n - start : 32;
+        float level[MAX_CH] = {0};
+        for (uint32_t c = 0; c < channels; ++c) {
+            const float *x = data[c] + start;
+            float m = 0.0f;
+            if (d->rms) { for (uint32_t i = 0; i < len; ++i) m += x[i] * x[i]; m = sqrtf(m / (float)len); }
+            else for (uint32_t i = 0; i < len; ++i) { float a = fabsf(x[i]); if (a > m) m = a; }
+            level[c] = m;
+        }
+        float peak = 0.0f;
+        for (uint32_t c = 0; c < channels; ++c) if ((!d->link || c != 3) && level[c] > peak) peak = level[c];
+        for (uint32_t c = 0; c < channels; ++c) if (!d->link || c != 3) level[c] = peak;
+        for (uint32_t c = 0; c < channels; ++c) {
+            float det = level[c], target = 1.0f, thr = d->threshold;
+            float knee_start = thr * (1.0f - d->knee * 0.5f), over = det - knee_start;
+            if (d->knee > 0.0f && over > 0.0f && over < thr - knee_start)
+                target = (knee_start + over * ((over / (thr - knee_start)) * 0.5f * (d->ratio - 1.0f) + 1.0f)) / det;
+            else if (thr < det) target = (thr + (det - thr) * d->ratio) / det;
+            float g = d->gain[c], coef = g <= target ? d->release_coef : d->attack_coef;
+            float *x = data[c] + start;
+            for (uint32_t i = 0; i < len; ++i) { g = target + coef * (g - target); x[i] *= d->level * g; }
+            d->gain[c] = g;
+        }
+    }
+}
+static void dynamics_set(Dynamics *d, uint32_t flags, const float values[6]) {
+    d->enabled = !(flags & 1);
+    d->rms = (flags >> 1) & 1;
+    d->link = (flags >> 3) & 1;
+    d->threshold = clampf(values[0], 0.0f, 1.0f);
+    d->ratio = clampf(values[1], 0.0f, 1.0f);
+    d->knee = clampf(values[2], 0.0f, 1.0f);
+    d->attack = clampf(values[3], 0.0f, 10.0f);
+    d->release = clampf(values[4], 0.0f, 10.0f);
+    d->level = clampf(values[5], 0.0f, 32.0f);
+    d->dirty = 1;
+}
+
+/* Mastering LFE low-pass: 4th-order 0.1 dB Chebyshev (two sections), bilinear transform. */
+static void lfe_design(Voice *v, uint32_t rate) {
+    static const float pole_ratio[2] = {0.7891f, 1.1532f}, pole_q[2] = {0.61866f, 2.18276f};
+    float k = 2.0f * (float)rate, gain = 0.98855f;
+    for (int s = 0; s < 2; ++s) {
+        float w = 6.2831855f * (float)v->lfe_fc * pole_ratio[s], w2 = w * w, wq = w / pole_q[s];
+        float a0 = k * k + wq * k + w2, a1 = 2 * w2 - 2 * k * k, a2 = k * k - wq * k + w2;
+        float g = s ? w2 / a0 * gain : w2 / a0;
+        float *c = v->lfe_c[s];
+        c[0] = g; c[1] = 2 * g; c[2] = g; c[3] = -a1 / a0; c[4] = -a2 / a0;
+    }
+}
+
+/* Envelope curves (x in 0..1 -> 0..1 of the way from the start to the target height). */
+static float envelope_curve(uint32_t curve, float x, int rising) {
+    switch (curve) {
+    case 0: return x;
+    case 1: return (powf(10.0f, x) - 1.0f) / 9.0f;
+    case 2: return log10f(1.0f + 9.0f * x);
+    case 3: return 0.5f - 0.5f * cosf(3.14159265f * x);
+    case 4: return 0.5f + asinf(2.0f * x - 1.0f) / 3.14159265f;
+    case 5: return rising ? sinf(1.5707963f * x) : 1.0f - cosf(1.5707963f * x);
+    default: return 0.0f;      /* unknown curve: the level holds */
+    }
+}
+
+/* ---- Reverb ---- */
+static const float er_span[8] = {35.0f, 38.03f, 29.0f, 53.0f, 30.0f, 55.0f, 40.0f, 62.0f};
+static const float er_time[8][3] = {{11, 23, 35}, {14.75f, 26.55f, 38.03f}, {6, 17, 29}, {8, 20, 53},
+                                    {11, 17, 30}, {16, 30, 55}, {20, 29, 40}, {37, 47, 62}};
+static const float er_gain[8][3] = {{0.4f, 0.134f, 0.1f}, {0.4f, 0.3f, 0.1f}, {0.45f, -0.6f, 0.2f}, {0.55f, -0.6f, 0.2f},
+                                    {-0.45f, 0.6f, 0.3f}, {0.7f, 0.7f, 0.4f}, {0.7f, -0.4f, 0.3f}, {0.7f, -0.4f, 0.4f}};
+static const float comb_ms[REVERB_COMBS] = {22.01f, 23.25f, 24.75f, 26.6f, 28.25f, 29.63f, 31.06f, 32.44f,
+                                            33.69f, 34.95f, 36.29f, 37.65f, 38.99f, 40.35f, 41.67f, 43.05f};
+static const float allpass_ms[REVERB_ALLPASS] = {11.58f, 9.19f, 7.1f, 4.69f};
+static const int allpass_offset[MAX_CH][REVERB_ALLPASS] = {{0, -32, -6, -11}, {-10, -5, 0, -34}, {-8, -3, -33, -5}, {-7, -9, -5, -8},
+                                                          {-33, -8, -8, 0}, {-11, -21, -10, -7}, {-9, -10, -27, -3}, {-6, -11, -9, -24}};
+static const uint16_t comb_mask[MAX_CH] = {0xaaaa, 0x5555, 0xcccc, 0x3333, 0x0ff0, 0x9ab2, 0x3c3c, 0x399c};
+
+static Reverb *reverb_new(uint32_t rate) {
+    Reverb *r = calloc(1, sizeof(*r));
+    if (!r) return NULL;
+    r->er_length = rate / 10;
+    size_t floats = r->er_length + (3 + REVERB_COMBS) * MAX_GRAIN;
+    uint32_t comb_max = (uint32_t)((float)rate * 43.05f / 1000.0f) + 8;
+    floats += (size_t)comb_max * REVERB_COMBS;
+    uint32_t ap_len[REVERB_ALLPASS];
+    for (int i = 0; i < REVERB_ALLPASS; ++i) { ap_len[i] = (uint32_t)((float)rate * allpass_ms[i] * 0.001f + 0.5f); floats += (size_t)ap_len[i] * MAX_CH; }
+    float *mem = calloc(floats, sizeof(float));
+    if (!mem) { free(r); return NULL; }
+    r->er_line = mem; mem += r->er_length;
+    r->work = mem; mem += (3 + REVERB_COMBS) * MAX_GRAIN;
+    for (int k = 0; k < REVERB_COMBS; ++k) { r->comb[k].line = mem; r->comb[k].length = comb_max; mem += comb_max; }
+    for (int c = 0; c < MAX_CH; ++c)
+        for (int i = 0; i < REVERB_ALLPASS; ++i) {
+            int len = (int)ap_len[i] + allpass_offset[c][i];
+            r->ap[c][i].line = mem; r->ap[c][i].length = len > 1 ? (uint32_t)len : 1; mem += ap_len[i];
+        }
+    /* Defaults the console module sets up: silent I3DL2 preset, wet 1, dry 0. */
+    r->wet = 1.0f; r->dry = 0.0f; r->room = 0.0f; r->room_hf = 1.0f; r->decay_time = 1.0f; r->decay_hf_ratio = 0.5f;
+    r->reflections = 0.0f; r->reflections_delay = 0.02f; r->reverb = 0.0f; r->reverb_delay = 0.04f;
+    r->diffusion = 100.0f; r->density = 100.0f; r->hf_reference = 5000.0f;
+    r->dirty = 1;
+    return r;
+}
+static void reverb_free(Reverb *r) { if (r) { free(r->er_line); free(r); } }
+
+static void reverb_design(Reverb *r, uint32_t rate) {
+    r->dirty = 0;
+    /* Early reflections: tap 0 at reflectionsDelay, three pattern taps, tap 4 feeds the combs. */
+    uint32_t p = r->pattern % 8, len = r->er_length;
+    uint32_t first = (uint32_t)(r->reflections_delay * (float)rate + 0.5f);
+    uint32_t late = (uint32_t)((r->reflections_delay + r->reverb_delay) * (float)rate + 0.5f);
+    if (first > len) first = len;
+    if (late > len || r->pattern >= 8) late = len;
+    uint32_t span = (uint32_t)((float)rate * er_span[p] * 0.001f + 0.5f);
+    float scale = late < first + span && span ? (float)(late - first) / (float)span : 1.0f;
+    r->tap_delay[0] = first; r->tap_gain[0] = 0.7f;
+    uint32_t previous = first;
+    for (int i = 0; i < 3; ++i) {
+        uint32_t d = first + (uint32_t)(scale * er_time[p][i] * (float)rate * 0.001f + 0.5f);
+        r->tap_delay[i + 1] = d;
+        r->tap_gain[i + 1] = d != previous ? er_gain[p][i] : 0.0f;
+        previous = d;
+    }
+    uint32_t d4 = first + (uint32_t)(r->reverb_delay * (float)rate + 0.5f);
+    r->tap_delay[4] = d4 > len ? len : d4; r->tap_gain[4] = 1.0f;
+    for (int i = 0; i < 5; ++i) if (r->tap_delay[i] >= len) r->tap_delay[i] = len - 1;
+    r->er_gain = r->reflections * r->room;
+    r->late_gain = r->reverb * r->room;
+    r->ap_coef = r->diffusion * 0.005f;
+    /* Combs: length from the table scaled by density (odd), feedback for decayTime, HF damping. */
+    float ratio = r->decay_hf_ratio;
+    for (int k = 0; k < REVERB_COMBS; ++k) {
+        Comb *cb = &r->comb[k];
+        uint32_t l = (uint32_t)((float)rate * comb_ms[k] / (r->density * -3.0f / 100.0f + 4.0f) * 0.001f + 0.5f);
+        l += ~l & 1;
+        uint32_t max = (uint32_t)((float)rate * 43.05f / 1000.0f) + 8;
+        if (l > max) l = max;
+        if (l != cb->length) { cb->length = l; if (cb->index >= l) cb->index = 0; }
+        float g = powf(10.0f, (float)l / (float)rate / r->decay_time * -3.0f);
+        cb->gain = g;
+        if (ratio > 1.0f) {
+            float f = powf(10.0f, (ratio - 1.0f) * log10f(g));
+            cb->damp_a = 0.0506f; cb->damp_b = 0.9494f; cb->shelf_a = 1.0f; cb->shelf_b = 1.0f - f;
+        } else {
+            float f = ratio < 0.8f ? (0.8f - ratio) * -0.8571429f + 0.8f : ratio;
+            f *= f;
+            float damp = fminf(0.99978f, log10f(g) * 2.3025851f * 0.25f * (1.0f - 1.0f / f));
+            cb->damp_a = 1.0f - damp; cb->damp_b = damp; cb->shelf_a = 0.0f; cb->shelf_b = 1.0f;
+        }
+        float s = sqrtf(ratio), t = (1.0f - s) / (s + 1.0f);
+        cb->fir_a = t / (1.0f - t) + 1.0f;
+        cb->fir_b = -t / (1.0f - t);
+    }
+    /* Room HF: two one-pole low-passes at HFReference reaching roomHF there. */
+    r->hf_k = 0.0f;
+    if (r->room_hf < 1.0f) {
+        float g = r->room_hf, cs = cosf(r->hf_reference * 6.2831855f / (float)rate);
+        float a = sqrtf(fmaxf(0.0f, (g + g) * (1.0f - cs) - g * g * (1.0f - cs * cs)));
+        r->hf_k = ((1.0f - g * cs) - a) / (1.0f - g);
+    }
+}
+static void reverb_set_i3dl2(Reverb *r, const ParamHeader *p, float (*f)(const ParamHeader *, uint32_t), uint32_t (*u)(const ParamHeader *, uint32_t)) {
+    r->wet = clampf(f(p, 8), 0.0f, 1.0f);
+    r->dry = clampf(f(p, 12), 0.0f, 1.0f);
+    int32_t room = (int32_t)u(p, 16), room_hf = (int32_t)u(p, 20), refl = (int32_t)u(p, 36), rev = (int32_t)u(p, 44);
+    r->room = fminf(1.0f, mb_to_gain((float)room));
+    r->room_hf = mb_to_gain((float)(room_hf > 0 ? 0 : room_hf < -10000 ? -10000 : room_hf));
+    r->pattern = u(p, 24) < 16 ? u(p, 24) : 0;
+    r->decay_time = clampf(f(p, 28), 0.1f, 20.0f);
+    r->decay_hf_ratio = clampf(f(p, 32), 0.01f, 2.0f);
+    r->reflections = mb_to_gain((float)(refl > 1000 ? 1000 : refl < -10000 ? -10000 : refl));
+    r->reflections_delay = clampf(f(p, 40), 0.0f, 0.3f);
+    r->reverb = mb_to_gain((float)((rev > 2000 ? 2000 : rev < -10000 ? -10000 : rev) - 2400));
+    r->reverb_delay = clampf(f(p, 48), 0.0f, 0.1f);
+    r->diffusion = clampf(f(p, 52), 0.0f, 100.0f);
+    r->density = clampf(f(p, 56), 0.0f, 100.0f);
+    r->hf_reference = clampf(f(p, 60), 20.0f, 20000.0f);
+    r->dirty = 1;
+}
+static void reverb_run(Reverb *r, uint32_t rate, float data[MAX_CH][MAX_GRAIN], uint32_t in_channels, uint32_t out_channels, uint32_t n) {
+    if (r->dirty) reverb_design(r, rate);
+    float *mono = r->work, *er = mono + MAX_GRAIN, *late_in = er + MAX_GRAIN, *combs = late_in + MAX_GRAIN;
+    /* Mono downmix without the LFE. */
+    float dg = in_channels >= 8 ? 0.267f : in_channels >= 6 ? 0.31623f : in_channels >= 2 ? 0.70711f : 1.0f;
+    memset(mono, 0, n * sizeof(float));
+    for (uint32_t c = 0; c < in_channels; ++c) {
+        if (in_channels > 1 && c == 3 && in_channels >= 6) continue;
+        for (uint32_t i = 0; i < n; ++i) mono[i] += data[c][i] * (in_channels == 1 ? 1.0f : dg);
+    }
+    /* Early reflection taps and the late input from one delay line. */
+    for (uint32_t i = 0; i < n; ++i) {
+        r->er_line[r->er_index] = mono[i];
+        float e = 0.0f;
+        for (int t = 0; t < 4; ++t) e += r->tap_gain[t] * r->er_line[(r->er_index + r->er_length - r->tap_delay[t]) % r->er_length];
+        er[i] = e;
+        late_in[i] = r->er_line[(r->er_index + r->er_length - r->tap_delay[4]) % r->er_length];
+        if (++r->er_index == r->er_length) r->er_index = 0;
+    }
+    /* Combs. */
+    for (int k = 0; k < REVERB_COMBS; ++k) {
+        Comb *cb = &r->comb[k];
+        float *out = combs + (size_t)k * MAX_GRAIN;
+        for (uint32_t i = 0; i < n; ++i) {
+            float x = cb->fir_a * late_in[i] + cb->fir_b * cb->x1;
+            cb->x1 = late_in[i];
+            float d = cb->line[cb->index];
+            cb->lp_state = d * cb->damp_a + cb->lp_state * cb->damp_b;
+            float y = (d * cb->shelf_a + cb->lp_state * cb->shelf_b) * cb->gain;
+            cb->line[cb->index] = x + y;
+            if (++cb->index >= cb->length) cb->index = 0;
+            out[i] = y;
+        }
+        if (fabsf(cb->lp_state) < 1e-20f) cb->lp_state = 0.0f;
+    }
+    /* Per output channel: comb mix, 4 allpasses, ER + late, room HF, wet + dry. */
+    float rev[MAX_GRAIN];
+    for (uint32_t c = 0; c < out_channels; ++c) {
+        if (c == 3 && out_channels >= 6) {
+            float d = r->dry;
+            for (uint32_t i = 0; i < n; ++i) data[c][i] = (c < in_channels ? data[c][i] : 0.0f) * d;
+            continue;
+        }
+        memset(rev, 0, n * sizeof(float));
+        uint32_t j = 0;
+        for (int k = 0; k < REVERB_COMBS; ++k) {
+            if (!(comb_mask[c] >> k & 1)) continue;
+            float g = (j & 1) ? 1.0f : 1.0f / ((float)j * 0.5f * 20.0f + 40.0f) * (r->diffusion - 100.0f) + 1.0f;
+            const float *o = combs + (size_t)k * MAX_GRAIN;
+            for (uint32_t i = 0; i < n; ++i) rev[i] += o[i] * g;
+            ++j;
+        }
+        for (int a = 0; a < REVERB_ALLPASS; ++a) {
+            Allpass *ap = &r->ap[c][a];
+            for (uint32_t i = 0; i < n; ++i) {
+                float d = ap->line[ap->index], w = rev[i] + r->ap_coef * d;
+                ap->line[ap->index] = w;
+                rev[i] = d - r->ap_coef * w;
+                if (++ap->index >= ap->length) ap->index = 0;
+            }
+        }
+        float *z = r->hf_z[c], k = r->hf_k, b = (1.0f - k) * (1.0f - k);
+        for (uint32_t i = 0; i < n; ++i) {
+            float y = r->er_gain * er[i] + r->late_gain * rev[i];
+            if (k != 0.0f) { y = b * y + 2.0f * k * z[0] - k * k * z[1]; z[1] = z[0]; z[0] = y; }
+            data[c][i] = r->wet * y + r->dry * (c < in_channels ? data[c][i] : 0.0f);
+        }
+    }
+}
+
+/* ---- Chorus and delay (custom rack modules) ---- */
+static void chorus_run(Chorus *ch, uint32_t rate, float data[MAX_CH][MAX_GRAIN], uint32_t channels, uint32_t n) {
+    if (!ch->line) return;
+    uint32_t phases = ch->phases < 1 ? 1 : ch->phases > 4 ? 4 : ch->phases;
+    float base = (float)(int)(ch->delay_ms * 0.001f * (float)rate);
+    float depth = base * ch->depth, step = ch->rate_hz / (float)rate;
+    float dry = ch->gain * ch->dry, wet = ch->gain * ch->wet;
+    float phase0 = ch->phase;
+    uint32_t write0 = ch->write;
+    for (uint32_t c = 0; c < channels; ++c) {
+        if (ch->mask >> c & 1) continue;
+        float phase = phase0;
+        uint32_t w = write0;
+        float *lines = ch->line + (size_t)c * 4 * CHORUS_LINE;
+        for (uint32_t i = 0; i < n; ++i) {
+            float x = data[c][i], in = x, v = 0.0f;
+            for (uint32_t k = 0; k < phases; ++k) {
+                float ph = phase + (float)k / (float)phases;
+                ph -= floorf(ph);
+                float d = base + 1.0f + depth * sinf(6.2831855f * ph);
+                uint32_t di = (uint32_t)d;
+                float fr = d - (float)di;
+                float *line = lines + (size_t)k * CHORUS_LINE;
+                v = fr * line[(w + di + 1) & (CHORUS_LINE - 1)] + (1.0f - fr) * line[(w + di) & (CHORUS_LINE - 1)];
+                line[w] = in + ch->feedback * v;
+                in = v;
+            }
+            data[c][i] = dry * x + wet * v;
+            phase += step;
+            w = (w - 1) & (CHORUS_LINE - 1);
+        }
+    }
+    float p = phase0 + step * (float)n;
+    ch->phase = p - floorf(p);
+    ch->write = (write0 - n) & (CHORUS_LINE - 1);
+}
+static void delay_design(Delay *d, uint32_t rate, uint32_t grain) {
+    uint32_t need = grain + 1;
+    for (uint32_t t = 0; t < d->taps; ++t) {
+        uint32_t s = (uint32_t)((float)rate * d->tap_ms[t] * 0.001f + 0.5f);
+        if (s < grain) s = grain;
+        d->tap_delay[t] = s;
+        if (s + 1 > need) need = s + 1;
+    }
+    if (need > d->length) {
+        float *line = calloc((size_t)need * MAX_CH, sizeof(float));
+        if (line) { free(d->line); d->line = line; d->length = need; d->write = 0; }
+    }
+    float c = cosf(d->lowpass_hz * 6.2831855f / (float)rate), k = 2.0f - c;
+    d->lp_coef = k - sqrtf(k * k - 1.0f);
+}
+static void delay_run(Delay *d, float data[MAX_CH][MAX_GRAIN], uint32_t channels, uint32_t n) {
+    if (!d->line) return;
+    float sum = 0.0f;
+    for (uint32_t t = 0; t < d->taps; ++t) sum += fabsf(d->tap_level[t]);
+    float fb = d->feedback / fmaxf(sum, 1.0f), dry = d->gain * d->dry, wet = d->gain * d->wet;
+    float delayed[MAX_GRAIN], mono[MAX_GRAIN];
+    uint32_t len = d->length;
+    if (d->type == 0) {   /* one line fed by a downmix */
+        memset(mono, 0, n * sizeof(float));
+        for (uint32_t c = 0; c < channels; ++c) if (c != 3) for (uint32_t i = 0; i < n; ++i) mono[i] += data[c][i] * d->in_gain[c];
+    }
+    for (uint32_t c = 0; c < (d->type == 0 ? 1u : channels); ++c) {
+        if (d->type != 0 && (c == 3 || (d->mask >> c & 1))) continue;
+        float *line = d->line + (size_t)c * len;
+        const float *in = d->type == 0 ? mono : data[c];
+        float g_in = d->type == 0 ? 1.0f : d->in_gain[c];
+        memset(delayed, 0, n * sizeof(float));
+        for (uint32_t t = 0; t < d->taps; ++t) {
+            if (d->tap_level[t] == 0.0f) continue;
+            uint32_t r = (d->write + len - d->tap_delay[t]) % len;
+            for (uint32_t i = 0; i < n; ++i) { delayed[i] += d->tap_level[t] * line[r]; if (++r == len) r = 0; }
+        }
+        if (d->flags & 1) {
+            float k = d->lp_coef, s = d->lp_state[c];
+            for (uint32_t i = 0; i < n; ++i) { s = (1.0f - k) * delayed[i] + k * s; delayed[i] = s; }
+            d->lp_state[c] = fabsf(s) < 1e-20f ? 0.0f : s;
+        }
+        uint32_t w = d->write;
+        for (uint32_t i = 0; i < n; ++i) { line[w] = g_in * in[i] + fb * delayed[i]; if (++w == len) w = 0; }
+        if (d->type == 0) {
+            for (uint32_t o = 0; o < channels; ++o) {
+                if (o == 3 || (d->mask >> o & 1)) continue;
+                for (uint32_t i = 0; i < n; ++i) data[o][i] = dry * mono[i] + wet * delayed[i];
+            }
+        } else for (uint32_t i = 0; i < n; ++i) data[c][i] = dry * data[c][i] + wet * delayed[i];
+    }
+    d->write = (d->write + n) % len;
+}
+
 /* ---- Objects and handles ---- */
 static uint32_t rack_kind(uint32_t id) {
     switch (id) {
@@ -437,10 +953,20 @@ static void voice_init(Voice *v, Rack *r, uint32_t index) {
     v->index = index;
     v->channels = r->kind == KIND_SAMPLER ? 1 : MAX_CH;
     for (int p = 0; p < MAX_PORTS; ++p) { v->ports[p].volume = 1.0f; v->ports[p].matrix = -1; }
-    v->dry = 0.0f; v->wet = 1.0f;
-    v->gain_fbw = v->gain_lfe = 1.0f;
-    v->limiter_threshold = 1.0f;
     v->out_channels = MAX_CH;
+    dynamics_reset(&v->compressor);
+    v->compressor.dirty = 1;
+    if (r->kind == KIND_MASTERING) {
+        /* Mastering setup defaults of the console module: LFE low-pass at 120 Hz, limiter at
+         * 1.0 (ratio 0, attack 1 ms, release 10 ms), no gain module until GAIN is set. */
+        v->lfe_enabled = 1;
+        v->lfe_fc = 120;
+        lfe_design(v, r->system->rate);
+        static const float limiter[6] = {1.0f, 0.0f, 0.0f, 0.001f, 0.01f, 1.0f};
+        dynamics_set(&v->limiter, 0, limiter);
+        dynamics_reset(&v->limiter);
+        for (int c = 0; c < MAX_CH; ++c) v->gain[c] = v->gain_last[c] = 1.0f;
+    }
 }
 static int voice_alloc_parts(Voice *v) {
     Rack *r = v->rack;
@@ -452,6 +978,7 @@ static int voice_alloc_parts(Voice *v) {
         v->sampler->pitch = 1.0f;
         v->sampler->env_level = 1.0f;
     } else if (!(v->input = calloc((size_t)MAX_CH * MAX_GRAIN, sizeof(float)))) return 0;
+    if (r->kind == KIND_REVERB && !(v->reverb = reverb_new(r->system->rate))) return 0;
     return 1;
 }
 static void voice_free(Voice *v) {
@@ -463,6 +990,11 @@ static void voice_free(Voice *v) {
     }
     free(v->matrices);
     free(v->input);
+    reverb_free(v->reverb);
+    if (v->chorus) free(v->chorus->line);
+    if (v->delay) free(v->delay->line);
+    free(v->chorus);
+    free(v->delay);
     v->magic = 0;
 }
 
@@ -650,7 +1182,15 @@ static void voice_finish(Voice *v) {
     if (v->sampler) {
         sampler_clear_blocks(v->sampler);
         v->sampler->releasing = 0;
+        v->sampler->stopping = 0;
+        v->sampler->fade_in = 0;
     }
+}
+/* STOP/KILL (and a release without release points) end a playing sampler after one more grain
+ * that fades out over 64 samples, as the console module does. */
+static void voice_stop(Voice *v) {
+    if (v->sampler && v->state == ST_PLAYING && !v->paused) v->sampler->stopping = 1;
+    else voice_finish(v);
 }
 
 static void envelope_start(Sampler *s) {
@@ -667,7 +1207,13 @@ static void voice_event(Voice *v, uint32_t event) {
         if (v->state != ST_PLAYING) {
             v->state = ST_PLAYING;
             v->paused = 0;
-            if (v->sampler) { envelope_start(v->sampler); ++stat_plays; }
+            if (v->sampler) {
+                envelope_start(v->sampler);
+                v->sampler->fade_in = 1;
+                v->sampler->stopping = 0;
+                for (int p = 0; p < MAX_PORTS; ++p) v->ports[p].primed = 0;
+                ++stat_plays;
+            }
         }
         break;
     case EV_RELEASE:
@@ -679,12 +1225,12 @@ static void voice_event(Voice *v, uint32_t event) {
             s->env_segment = s->env_forward;
             s->env_position = 0;
             s->env_start = s->env_level;
-        } else voice_finish(v);
+        } else voice_stop(v);
         break;
     case EV_STOP:
     case EV_KILL:
-        voice_finish(v);
-        if (!v->sampler) { v->state = ST_READY; v->stopped = 1; } /* buses stay set up */
+        if (v->sampler) voice_stop(v);
+        else { voice_finish(v); v->state = ST_READY; v->stopped = 1; } /* buses stay set up */
         break;
     case EV_PAUSE: if (v->state == ST_PLAYING) v->paused = 1; break;
     case EV_RESUME: v->paused = 0; break;
@@ -726,6 +1272,7 @@ static void sampler_add_blocks(Voice *v, const ParamHeader *p) {
     const GuestBlock *blocks = (const GuestBlock *)ptr_at(p, 24);
     (void)flags;
     if (!data || !blocks) return;
+    if (v->state == ST_PLAYING && (s->empty_renders || (s->source_done && s->count == 0))) ++stat_underruns; /* data came late */
     if (s->source_done && s->count == 0) s->source_done = 0;  /* more data for a starved stream */
     for (uint32_t i = 0; i < count && i < MAX_BLOCKS; ++i) {
         if (s->count == MAX_BLOCKS) { note("waveform block queue full"); break; }
@@ -754,11 +1301,75 @@ static void sampler_envelope(Voice *v, const ParamHeader *p) {
 }
 static void store_filter(Voice *v, const ParamHeader *p) {
     uint32_t index = u32_at(p, 8);
-    if (index >= MAX_FILTERS) return;
-    Filter *f = &v->filters[index];
-    f->index = index; f->location = u32_at(p, 12); f->type = u32_at(p, 16); f->mask = u32_at(p, 20);
-    f->a = f32_at(p, 24); f->b = f32_at(p, 28); f->c = f32_at(p, 32); f->d = f32_at(p, 36); f->e = f32_at(p, 40);
-    if (index >= v->num_filters) v->num_filters = index + 1;
+    if (index >= MAX_FILTERS || u32_at(p, 12) > 17) return;
+    Biquad *f = &v->filters[index];
+    uint32_t type = u32_at(p, 16) & 0xff;
+    if (!f->used || f->type != type) memset(f->z, 0, sizeof(f->z));
+    f->used = 1;
+    f->location = u32_at(p, 12) & 0xff;
+    f->type = type;
+    f->mask = u32_at(p, 20) & 0xff;
+    f->fc = f32_at(p, 24); f->q = f32_at(p, 28); f->level = f32_at(p, 32);
+    for (int i = 0; i < 5; ++i) f->direct[i] = f32_at(p, 24 + 4 * (uint32_t)i);
+    f->dirty = 1;
+}
+static void store_compressor(Dynamics *d, const ParamHeader *p) {
+    float values[6] = {f32_at(p, 12), f32_at(p, 16), f32_at(p, 20), f32_at(p, 24), f32_at(p, 28), f32_at(p, 32)};
+    int was = d->enabled;
+    dynamics_set(d, u32_at(p, 8), values);
+    if (!was) dynamics_reset(d);
+}
+static Chorus *voice_chorus(Voice *v) { if (!v->chorus) v->chorus = calloc(1, sizeof(Chorus)); return v->chorus; }
+static Delay *voice_delay(Voice *v) {
+    if (!v->delay) {
+        v->delay = calloc(1, sizeof(Delay));
+        if (v->delay) {
+            const char *type = env("NGS2_DELAY_TYPE");
+            v->delay->type = type && *type == '0' ? 0 : 1;   /* the console default (per channel) */
+        }
+    }
+    return v->delay;
+}
+static void store_chorus(Voice *v, const ParamHeader *p) {
+    Chorus *c = voice_chorus(v);
+    if (!c) return;
+    if (!c->line && !(c->line = calloc((size_t)MAX_CH * 4 * CHORUS_LINE, sizeof(float)))) return;  /* not on the audio thread */
+    c->used = 1;
+    c->mask = u32_at(p, 16) & 0xff;
+    c->phases = u32_at(p, 12);
+    if (c->phases < 1 || c->phases > 4) c->phases = 1;
+    c->gain = clampf(f32_at(p, 20), 0.0f, 1.0f);
+    c->delay_ms = clampf(f32_at(p, 24), 0.1f, 40.0f);
+    c->rate_hz = clampf(f32_at(p, 28), 0.001f, 20.0f);
+    c->depth = clampf(f32_at(p, 32), 0.0f, 1.0f);
+    c->feedback = clampf(f32_at(p, 36), -1.0f, 1.0f);
+    c->wet = clampf(f32_at(p, 40), -1.0f, 1.0f);
+    c->dry = clampf(f32_at(p, 44), 0.0f, 1.0f);
+}
+static void store_delay(Voice *v, const ParamHeader *p) {
+    Delay *d = voice_delay(v);
+    if (!d) return;
+    d->used = 1;
+    d->dry = clampf(f32_at(p, 8), -1.0f, 1.0f);
+    d->wet = clampf(f32_at(p, 12), -1.0f, 1.0f);
+    d->gain = clampf(f32_at(p, 16), -1.0f, 1.0f);
+    d->feedback = clampf(f32_at(p, 20), -1.0f, 1.0f);
+    d->lowpass_hz = clampf(f32_at(p, 24), 0.0f, 24000.0f);
+    d->taps = u32_at(p, 28);
+    if (d->taps < 1) d->taps = 1;
+    if (d->taps > 8) d->taps = 8;
+    for (uint32_t t = 0; t < 8; ++t) {
+        d->tap_level[t] = t < d->taps ? clampf(f32_at(p, 32 + 8 * t), -1.0f, 1.0f) : 0.0f;
+        d->tap_ms[t] = t < d->taps ? clampf(f32_at(p, 36 + 8 * t), 0.0f, 20000.0f) : 0.0f;
+    }
+    d->mask = u32_at(p, 128);
+    d->flags = u32_at(p, 132);
+    for (uint32_t c = 0; c < MAX_CH; ++c) {
+        if (d->flags & 2) d->in_gain[c] = clampf(f32_at(p, 96 + 4 * c), -1.0f, 1.0f);
+        else if (d->type == 1) d->in_gain[c] = 1.0f;
+        else d->in_gain[c] = v->channels >= 8 ? 0.267f : v->channels >= 6 ? 0.31623f : v->channels >= 2 ? 0.70711f : 1.0f;
+    }
+    delay_design(d, v->rack->system->rate, v->rack->system->grain);
 }
 static void store_user_fx(Voice *v, const ParamHeader *p) {
     v->user_fx = (UserFxHandler)ptr_at(p, 8);
@@ -821,7 +1432,7 @@ static void apply_param(Voice *v, const ParamHeader *p) {
             if (!v->channels || v->channels > MAX_CH) v->channels = MAX_CH;
             if (v->state == ST_FREE) v->state = ST_READY;
             return;
-        case 0x20000002: for (int i = 0; i < 8; ++i) v->compressor[i] = f32_at(p, 8 + 4 * (uint32_t)i); return;
+        case 0x20000002: store_compressor(&v->compressor, p); return;
         case 0x20000004: store_user_fx(v, p); return;
         case 0x20000006: store_filter(v, p); return;
         case 0x20000001: case 0x20000003: case 0x20000005: case 0x20000007: return;
@@ -832,15 +1443,30 @@ static void apply_param(Voice *v, const ParamHeader *p) {
             if (!v->out_channels || v->out_channels > MAX_CH) v->out_channels = MAX_CH;
             if (v->state == ST_FREE) v->state = ST_READY;
             return;
-        case 0x20010001:
-            v->wet = f32_at(p, 8);
-            v->dry = f32_at(p, 12);
-            for (int i = 0; i < 24 && 8 + 4 * i + 4 <= p->size; ++i) v->reverb[i] = f32_at(p, 8 + 4 * (uint32_t)i);
+        case 0x20010001: if (v->reverb && p->size >= 0x40) reverb_set_i3dl2(v->reverb, p, f32_at, u32_at); return;
+        case 0x30000002: {  /* LFE: enable, cut-off 80/120/240 Hz */
+            uint32_t fc = u32_at(p, 12);
+            if (fc != 80 && fc != 120 && fc != 240) return;
+            v->lfe_enabled = u32_at(p, 8) != 0;
+            if (fc != v->lfe_fc) { v->lfe_fc = fc; lfe_design(v, r->system->rate); }
             return;
-        case 0x30000003: v->limiter = u32_at(p, 8); v->limiter_threshold = f32_at(p, 12); return;
-        case 0x30000004: v->gain_fbw = f32_at(p, 8); v->gain_lfe = f32_at(p, 12); return;
+        }
+        case 0x30000003: {  /* LIMITER: enable, threshold */
+            int was = v->limiter.enabled;
+            v->limiter.enabled = u32_at(p, 8) != 0;
+            v->limiter.threshold = clampf(f32_at(p, 12), 0.0f, 4.0f);
+            if (!was) dynamics_reset(&v->limiter);
+            return;
+        }
+        case 0x30000004: {  /* GAIN: full band, LFE */
+            float fbw = clampf(f32_at(p, 8), 0.0f, 4.0f), lfe = clampf(f32_at(p, 12), 0.0f, 4.0f);
+            for (int c = 0; c < MAX_CH; ++c) v->gain[c] = c == 3 ? lfe : fbw;
+            if (!v->gain_set) for (int c = 0; c < MAX_CH; ++c) v->gain_last[c] = v->gain[c];
+            v->gain_set = 1;
+            return;
+        }
         case 0x30000005: v->output_id = u32_at(p, 8); return;
-        case 0x30000001: case 0x30000002: case 0x30000006: return;
+        case 0x30000001: case 0x30000006: return;
         }
         if (r->kind == KIND_CUSTOM && (p->id & 0xffff0000) == 0x40020000) {
             v->channels = u32_at(p, 8);
@@ -850,11 +1476,8 @@ static void apply_param(Voice *v, const ParamHeader *p) {
             if (v->state == ST_FREE) v->state = ST_READY;
             return;
         }
-        if (r->kind == KIND_CUSTOM && (p->id & 0xff000000) == 0x40000000) {
-            uint32_t n = p->size < sizeof(v->custom) ? p->size : sizeof(v->custom);
-            memcpy(v->custom, p, n); /* chorus 0x40001c00, delay 0x40001d00, ... (stage 5) */
-            return;
-        }
+        if (r->kind == KIND_CUSTOM && p->id == 0x40001c00 && p->size >= 0x30) { store_chorus(v, p); return; }
+        if (r->kind == KIND_CUSTOM && p->id == 0x40001d00 && p->size >= 0x88) { store_delay(v, p); return; }
     }
     note_unknown(r->id, p->id, p->size);
 }
@@ -1094,27 +1717,25 @@ static void fifo_fill(Voice *v, uint32_t need) {
     }
 }
 
+/* Envelope: each point moves from the level at its start to `height` over `duration` samples
+ * along its curve. After the forward points the level holds (a voice whose forward envelope
+ * ends at 0 stops); after the release points the voice ends. */
 static float envelope_next(Sampler *s, int *done) {
     uint32_t end = s->env_forward + (s->releasing ? s->env_release : 0);
     if (!s->env_forward && !s->releasing) return 1.0f;
     while (s->env_segment < end) {
         const EnvPoint *p = &s->env[s->env_segment];
         if (s->env_position < p->duration) {
-            float t = (float)s->env_position / (float)p->duration, k;
-            switch (p->curve) {
-            case 1: k = t * t; break;
-            case 2: k = 1.0f - (1.0f - t) * (1.0f - t); break;
-            default: k = t; break;
-            }
+            float t = (float)s->env_position / (float)p->duration;
             ++s->env_position;
-            s->env_level = s->env_start + (p->height - s->env_start) * k;
+            if (p->curve < 6) s->env_level = s->env_start + (p->height - s->env_start) * envelope_curve(p->curve, t, p->height > s->env_start);
             return s->env_level;
         }
         s->env_level = s->env_start = p->height;
         s->env_position = 0;
         ++s->env_segment;
     }
-    if (s->releasing) *done = 1;
+    if (s->releasing || s->env_level == 0.0f) *done = 1;
     return s->env_level;
 }
 
@@ -1148,6 +1769,14 @@ static uint32_t sampler_render(Voice *v, uint32_t n, float out[MAX_CH][MAX_GRAIN
         if (done) { ++i; ended = 2; break; }
     }
     for (uint32_t c = 0; c < ch; ++c) for (uint32_t k = i; k < n; ++k) out[c][k] = 0.0f;
+    if (s->fade_in || s->stopping) {
+        uint32_t len = n < 64 ? n : 64;
+        for (uint32_t c = 0; c < ch; ++c)
+            for (uint32_t k = 0; k < len; ++k) out[c][k] *= s->fade_in ? (float)k / 64.0f : 1.0f - (float)k / 64.0f;
+        if (s->stopping) for (uint32_t c = 0; c < ch; ++c) for (uint32_t k = len; k < n; ++k) out[c][k] = 0.0f;
+        s->fade_in = 0;
+        if (s->stopping) { voice_finish(v); return i; }
+    }
     if (ended == 2) voice_finish(v);
     else if (ended == 1 || (s->source_done && (uint32_t)s->pos >= s->fifo_len)) {
         /* Out of data: a stream may still queue blocks for a moment (reported as EMPTY). */
@@ -1159,12 +1788,16 @@ static uint32_t sampler_render(Voice *v, uint32_t n, float out[MAX_CH][MAX_GRAIN
 }
 
 /* ---- Mixing ---- */
-static void mix_port(const Voice *src, const Port *port, float in[MAX_CH][MAX_GRAIN], uint32_t n) {
+/* Adds `in` through a port into its destination's input; level = volume * matrix level, each
+ * ramped linearly over the grain from the previous render's value. */
+static void mix_port(const Voice *src, Port *port, float in[MAX_CH][MAX_GRAIN], uint32_t n) {
     Voice *dst = port->dest;
-    if (!dst || !dst->input || port->volume == 0.0f) return;
+    if (!dst || !dst->input) return;
     uint32_t sc = src->channels, dc = dst->channels;
     const Matrix *m = port->matrix >= 0 && (uint32_t)port->matrix < src->rack->max_matrices && src->matrices[port->matrix].count
                           ? &src->matrices[port->matrix] : NULL;
+    if (!port->primed) memset(port->last, 0, sizeof(port->last));
+    int any = 0;
     for (uint32_t o = 0; o < dc; ++o) {
         float *acc = dst->input + (size_t)o * MAX_GRAIN;
         for (uint32_t i = 0; i < sc; ++i) {
@@ -1174,12 +1807,33 @@ static void mix_port(const Voice *src, const Port *port, float in[MAX_CH][MAX_GR
                 level = k < m->count ? m->level[k] : 0.0f;
             } else level = o == i ? 1.0f : 0.0f;
             level *= port->volume;
-            if (level == 0.0f) continue;
+            float *last = &port->last[o * MAX_CH + i];
+            float from = port->primed ? *last : level;
+            *last = level;
+            if (from == 0.0f && level == 0.0f) continue;
             const float *x = in[i];
-            for (uint32_t k = 0; k < n; ++k) acc[k] += x[k] * level;
+            if (from == level) for (uint32_t k = 0; k < n; ++k) acc[k] += x[k] * level;
+            else {
+                float step = (level - from) / (float)n, g = from;
+                for (uint32_t k = 0; k < n; ++k) { g += step; acc[k] += x[k] * g; }
+            }
+            any = 1;
         }
     }
-    dst->has_input = 1;
+    port->primed = 1;
+    if (any) dst->has_input = dst->fed = 1;
+}
+/* Sends through every patched port; filters at location 2 + p shape only what port p sends. */
+static float port_scratch[MAX_CH][MAX_GRAIN];
+static void send_ports(Voice *v, float data[MAX_CH][MAX_GRAIN], uint32_t n) {
+    for (uint32_t p = 0; p < v->rack->max_ports; ++p) {
+        Port *port = &v->ports[p];
+        if (!port->dest || port->dest == v) continue;
+        if (filters_at(v, 2 + p)) {
+            filters_run(v, 2 + p, data, port_scratch, v->channels, n);
+            mix_port(v, port, port_scratch, n);
+        } else mix_port(v, port, data, n);
+    }
 }
 static void call_user_fx(Voice *v, float data[MAX_CH][MAX_GRAIN], uint32_t n) {
     static int enabled = -1;
@@ -1210,9 +1864,12 @@ static void process_sampler(Voice *v, uint32_t n) {
     if (v->state != ST_PLAYING || v->paused) { if (v->state != ST_PLAYING) v->peak = 0.0f; return; }
     uint32_t written = sampler_render(v, n, scratch);
     if (!written) { v->peak = 0.0f; return; }
+    /* Console order: filters (location 0), envelope, user FX, filters (1), ports (2 + p). */
+    filters_run(v, 0, scratch, scratch, v->channels, n);
     call_user_fx(v, scratch, n);
+    filters_run(v, 1, scratch, scratch, v->channels, n);
     v->peak = peak_of(scratch, v->channels, n);
-    for (uint32_t p = 0; p < v->rack->max_ports; ++p) mix_port(v, &v->ports[p], scratch, n);
+    send_ports(v, scratch, n);
 }
 
 static void process_bus(Voice *v, uint32_t n) {
@@ -1222,37 +1879,50 @@ static void process_bus(Voice *v, uint32_t n) {
     /* The traced games kick every bus; one that was never kicked still passes its input. */
     if ((v->state != ST_PLAYING && v->stopped) || v->paused) { v->peak = 0.0f; return; }
     float (*data)[MAX_GRAIN] = (float (*)[MAX_GRAIN])v->input;
-    uint32_t kind = v->rack->kind;
-    if (kind == KIND_REVERB && !reverb_pass) {
-        for (uint32_t c = 0; c < v->channels; ++c) for (uint32_t k = 0; k < n; ++k) data[c][k] *= v->dry;
-        if (v->out_channels > v->channels) for (uint32_t c = v->channels; c < v->out_channels; ++c) memset(data[c], 0, n * sizeof(float));
-    } else if (kind == KIND_CUSTOM && custom_mute) {
-        for (uint32_t c = 0; c < MAX_CH; ++c) memset(data[c], 0, n * sizeof(float));
-    }
-    if (kind == KIND_SUBMIXER && v->user_fx) { call_user_fx(v, data, n); v->has_input = 1; }
+    uint32_t kind = v->rack->kind, rate = v->rack->system->rate;
     uint32_t out_ch = kind == KIND_REVERB || kind == KIND_CUSTOM ? v->out_channels : v->channels;
-    if (kind == KIND_MASTERING) {
-        for (uint32_t c = 0; c < v->channels; ++c) {
-            float g = c == 3 ? v->gain_lfe : v->gain_fbw;
-            for (uint32_t k = 0; k < n; ++k) {
-                float x = data[c][k] * g;
-                if (v->limiter) { float t = v->limiter_threshold > 0.0f ? v->limiter_threshold : 1.0f; x = x > t ? t : x < -t ? -t : x; }
-                data[c][k] = x;
-            }
+    /* A submixer with nothing mixed in this render stays silent (its filter tails are far
+     * below audibility); reverb and custom racks keep running for their tails. */
+    if (kind == KIND_SUBMIXER && !v->fed) { v->peak = 0.0f; return; }
+    v->has_input = 1;   /* effects write into the input buffer: clear it before the next render */
+    switch (kind) {
+    case KIND_REVERB:
+        if (!reverb_pass && v->reverb) reverb_run(v->reverb, rate, data, v->channels, v->out_channels, n);
+        break;
+    case KIND_CUSTOM:
+        if (custom_mute) { for (uint32_t c = 0; c < MAX_CH; ++c) memset(data[c], 0, n * sizeof(float)); break; }
+        if (v->chorus && v->chorus->used) chorus_run(v->chorus, rate, data, out_ch, n);
+        if (v->delay && v->delay->used) delay_run(v->delay, data, out_ch, n);
+        break;
+    case KIND_MASTERING: {
+        if (v->lfe_enabled && v->channels > 4) {
+            biquad_run(v->lfe_c[0], v->lfe_z[0], data[3], data[3], n);
+            biquad_run(v->lfe_c[1], v->lfe_z[1], data[3], data[3], n);
         }
+        dynamics_run(&v->limiter, rate, data, v->channels, n);
+        if (v->gain_set)
+            for (uint32_t c = 0; c < v->channels; ++c) {
+                float from = v->gain_last[c], to = v->gain[c], step = (to - from) / (float)n, g = from;
+                for (uint32_t k = 0; k < n; ++k) { g += step; data[c][k] *= g; }
+                v->gain_last[c] = to;
+            }
         v->peak = peak_of(data, v->channels, n);
         uint32_t o = v->output_id < 8 ? v->output_id : 0;
         for (uint32_t c = 0; c < v->channels; ++c) for (uint32_t k = 0; k < n; ++k) outputs[o][c][k] += data[c][k];
         if (v->channels > output_channels[o]) output_channels[o] = v->channels;
         return;
     }
+    default:   /* submixer: filters, compressor, user FX, filters */
+        filters_run(v, 0, data, data, v->channels, n);
+        dynamics_run(&v->compressor, rate, data, v->channels, n);
+        call_user_fx(v, data, n);
+        filters_run(v, 1, data, data, v->channels, n);
+        break;
+    }
     v->peak = peak_of(data, out_ch, n);
     uint32_t saved = v->channels;
     v->channels = out_ch;   /* ports see the bus output width */
-    for (uint32_t p = 0; p < v->rack->max_ports; ++p) {
-        if (v->ports[p].dest == v) continue;
-        mix_port(v, &v->ports[p], data, n);
-    }
+    send_ports(v, data, n);
     v->channels = saved;
 }
 
@@ -1334,9 +2004,15 @@ static void summary(const System *s) {
     for (const Rack *r = s->racks; r; r = r->next)
         if (r->kind == KIND_SAMPLER)
             for (uint32_t i = 0; i < r->max_voices; ++i) { playing += r->voices[i]->state == ST_PLAYING; ready += r->voices[i]->state == ST_READY; }
-    note("render %llu: %u voices playing, %u ready; %llu plays, %llu finished, %llu blocks, %llu starved renders, %llu user FX calls, %llu errors",
+    note("render %llu: %u voices playing, %u ready; %llu plays, %llu finished, %llu blocks, %llu end-of-data renders, "
+         "%llu stream underruns, %llu user FX calls, %llu errors; render %.3f ms avg, %.3f ms max (grain %.2f ms)",
          (unsigned long long)s->renders, playing, ready, (unsigned long long)stat_plays, (unsigned long long)stat_finished,
-         (unsigned long long)stat_blocks, (unsigned long long)stat_starved, (unsigned long long)stat_user_fx, (unsigned long long)stat_errors);
+         (unsigned long long)stat_blocks, (unsigned long long)stat_starved, (unsigned long long)stat_underruns,
+         (unsigned long long)stat_user_fx, (unsigned long long)stat_errors,
+         stat_render_count ? stat_render_ns / (double)stat_render_count / 1e6 : 0.0, stat_render_max_ns / 1e6,
+         s->rate ? 1000.0 * s->grain / s->rate : 0.0);
+    stat_render_ns = stat_render_max_ns = 0.0;
+    stat_render_count = 0;
 }
 
 static ABI int32_t ngs2_render(uintptr_t handle, const RenderBuffer *buffers, uint32_t count) {
@@ -1344,12 +2020,18 @@ static ABI int32_t ngs2_render(uintptr_t handle, const RenderBuffer *buffers, ui
     System *s = as_system(handle);
     if (!s || (count && !buffers)) { pthread_mutex_unlock(&lock); return NGS2_ERR_HANDLE; }
     uint32_t n = s->grain;
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    /* Flush denormals (reverb and filter tails) to zero while mixing: 0x8040 = FTZ | DAZ. */
+    unsigned int csr = _mm_getcsr();
+    _mm_setcsr(csr | 0x8040);
     memset(outputs, 0, sizeof(outputs));
     memset(output_channels, 0, sizeof(output_channels));
     for (Rack *r = s->racks; r; r = r->next) {
         if (r->kind == KIND_SAMPLER) continue;
         for (uint32_t i = 0; i < r->max_voices; ++i) {
             Voice *v = r->voices[i];
+            v->fed = 0;
             if (v->has_input) { for (int c = 0; c < MAX_CH; ++c) memset(v->input + (size_t)c * MAX_GRAIN, 0, n * sizeof(float)); v->has_input = 0; }
         }
     }
@@ -1367,6 +2049,12 @@ static ABI int32_t ngs2_render(uintptr_t handle, const RenderBuffer *buffers, ui
         if (!(s->renders % 500)) wav_update();
     }
     ++s->renders;
+    _mm_setcsr(csr);
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    double ns = (double)(t1.tv_sec - t0.tv_sec) * 1e9 + (double)(t1.tv_nsec - t0.tv_nsec);
+    stat_render_ns += ns;
+    if (ns > stat_render_max_ns) stat_render_max_ns = ns;
+    ++stat_render_count;
     if (log_enabled() && s->rate && !(s->renders % (30u * s->rate / n))) summary(s);
     pthread_mutex_unlock(&lock);
     return NGS2_OK;
