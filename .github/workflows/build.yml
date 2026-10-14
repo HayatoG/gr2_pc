@@ -198,7 +198,7 @@ jobs:
           # One card per release: only the "## Novidades" section of the release notes (the full
           # notes are one click away). Without that section, the commit message stands in.
           news=$(gh release view "$tag" --json body --jq .body | tr -d '\r' |
-            awk '/^## Novidades/ { on = 1; next } on && /^## / { exit } on' |
+            awk '/^## Novidades/ { on = 1; next } /^## / { on = 0 } on' |
             sed -e '/./,$!d' | sed -e ':a' -e '/^\n*$/{$d;N;ba' -e '}')
           [[ -n $news ]] || news="- $(git log -1 --format=%s "$GITHUB_SHA" 2>/dev/null || echo "Build $short")"
           jq -n \
