@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <cctype>
 #include "tlg_settings.h"
 #include "tlg_orbs.h"
 #include "tlg_graphics.h"
@@ -60,6 +61,20 @@ void Set(Values& v, const std::string& key, const std::string& value) {
     for (unsigned cheat = 0; cheat < TLG_CHEAT_COUNT; ++cheat) {
         if (key == cheat_keys[cheat]) {
             v.cheats[cheat] = i != 0;
+            return;
+        }
+    }
+    if (key.size() == 4 && key[0] == 'b' && key[1] == 'p' && std::isdigit((unsigned char)key[2]) &&
+        std::isdigit((unsigned char)key[3])) {
+        const int n = (key[2] - '0') * 10 + (key[3] - '0');
+        if (n >= 1 && n <= kBackportPrefs && !value.empty()) {
+            v.backport_pref[n - 1] = i != 0;
+        }
+        return;
+    }
+    for (int e = 0; e < kExtraPrefs; ++e) {
+        if (key == kExtraKeys[e]) {
+            v.extra_pref[e] = value.empty() ? -1 : i != 0;
             return;
         }
     }
@@ -310,6 +325,14 @@ void Save() {
                  TlgGraphics::Resolutions[std::clamp(v.render_resolution.load(), 0, 5)].data(),
                  v.engine_fps.load(), int(v.deferred_readback.load()), int(v.stale_readback.load()),
                  int(v.restart_unconfirmed.load()));
+    // Fixes: applied on the next start by the launcher (TLG_BPnn / TLG_<NAME>); only the ones
+    // the player or the launcher chose are written.
+    for (int n = 0; n < kBackportPrefs; ++n) {
+        if (const int p = v.backport_pref[n]; p >= 0) std::fprintf(file, "bp%02d=%d\n", n + 1, p);
+    }
+    for (int e = 0; e < kExtraPrefs; ++e) {
+        if (const int p = v.extra_pref[e]; p >= 0) std::fprintf(file, "%s=%d\n", kExtraKeys[e], p);
+    }
     // Read by run.sh at start.
     std::fprintf(file, "live_resolution=%s\n", v.live_resolution < 0 ? "auto"
                                                   : v.live_resolution ? "1" : "0");

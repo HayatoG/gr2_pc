@@ -24,6 +24,8 @@
 extern TlgActorSlot tlg_actor_slots[2];
 extern "C" void runtime_restart(void); // src/probe.c: starts run.py again, ends this process
 #include "common/elf_info.h"
+#include "common/backports.h"
+#include "shader_recompiler/recompiler_toggles.h"
 #include "imgui.h"
 #include "imgui_internal.h" // RegisterUserTexture (save pictures)
 #include "imgui_impl_vulkan.h"
@@ -301,7 +303,7 @@ const char* UpscalerLabel(int upscaler) {
 // Portuguese when it starts with "pt", English otherwise.
 bool UiPortuguese() {
     static const bool pt = [] {
-        for (const char* name : {"TLG_UI_LANG", "LC_ALL", "LC_MESSAGES", "LANG"}) {
+        for (const char* name : {"TLG_UI_LANG", "LC_MESSAGES", "LANG"}) {
             if (const char* v = std::getenv(name); v && *v) return v[0] == 'p' && v[1] == 't';
         }
         return false;
@@ -374,6 +376,8 @@ void ImageTab() {
     }
 }
 
+void FixesSection();
+
 void PerformanceTab() {
     namespace G = TlgGraphics;
     auto& s = TlgSettings::Get();
@@ -381,7 +385,7 @@ void PerformanceTab() {
     // offered: they do not apply to TLG, and the readback ones crash it (it needs precise readbacks).
     ImGui::SeparatorText(TL("Live", "Em tempo real"));
     if (BeginRows("##live")) {
-        static const char* const fps_labels[] = {"30", "60", "120", "240", TL("Unlimited", "Sem limite")};
+        static const char* const fps_labels[] = {"30", "120", "240", TL("Unlimited", "Sem limite")};
         ChoiceRow(TL("Frame rate limit", "Limite de FPS"), s.fps_limit, fps_labels, G::FpsLimits.data(), int(G::FpsLimits.size()),
                   TL("Caps the presented frames. The game runs at 30 FPS (as on PS4).", "Limita os quadros apresentados. O jogo roda a 30 FPS (como no PS4)."));
         static const char* const queued_labels[] = {TL("1 (lowest latency)", "1 (menor atraso)"), "2", TL("Unlimited", "Sem limite")};
@@ -389,6 +393,95 @@ void PerformanceTab() {
                   int(G::FramesQueued.size()), TL("More frames queued: steadier FPS, slower response to input.", "Mais quadros na fila: FPS mais estável, resposta mais lenta."));
         CheckRow(TL("Compile new shaders in the background", "Compilar shaders novos em segundo plano"), s.async_shaders,
                  TL("Fewer stutters in new areas; an object or effect may appear a moment later.", "Menos engasgos em áreas novas; um objeto ou efeito pode aparecer um instante depois."));
+        ImGui::EndTable();
+    }
+    FixesSection();
+}
+
+
+// tlg: the fixes (common/backports.h) and the A/B switches. Live ones change at once; the others
+// are only recorded in tlg.ini (bpNN=0/1, wqm=0/1, ...) and apply on the next start, when the
+// launcher turns the keys into TLG_BPnn / TLG_<NAME>. The table is iterated, so a reordered
+// backports.h still lists every entry.
+void FixesSection() {
+    namespace B = Common::Backports;
+    auto& s = TlgSettings::Get();
+    ImGui::SeparatorText(TL("Fixes", "Correções"));
+    ImGui::TextDisabled("%s", TL("Marked (next start) are saved now and apply the next time the game starts.",
+                                 "As marcadas (próxima partida) são gravadas agora e valem na próxima vez que o jogo abrir."));
+    const ImVec4 amber(0.85f, 0.72f, 0.45f, 1.0f);
+    if (ImGui::BeginTable("##fixes", 4, ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthStretch, 0.50f);
+        ImGui::TableSetupColumn("on", ImGuiTableColumnFlags_WidthFixed);
+        ImGui::TableSetupColumn("hits", ImGuiTableColumnFlags_WidthStretch, 0.14f);
+        ImGui::TableSetupColumn("source", ImGuiTableColumnFlags_WidthStretch, 0.36f);
+        for (std::size_t i = 0; i < B::kEntries.size(); ++i) {
+            const B::Entry& e = B::kEntries[i];
+            const B::Id id = static_cast<B::Id>(i);
+            const bool live = B::IsLive(id);
+            const bool running = B::On(id);
+            const int pref = i < std::size_t(TlgSettings::kBackportPrefs) ? s.backport_pref[i].load() : -1;
+            bool shown = live || pref < 0 ? running : pref != 0;
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("%s  %s", e.id, e.what);
+            ImGui::TableNextColumn();
+            ImGui::PushID(e.id);
+            if (ImGui::Checkbox("##on", &shown)) {
+                if (live) {
+                    B::SetLive(id, shown);
+                }
+                if (i < std::size_t(TlgSettings::kBackportPrefs)) {
+                    s.backport_pref[i] = shown ? 1 : 0;
+                    dirty = true;
+                }
+            }
+            Help(live ? TL("Applies at once.", "Vale na hora.")
+                      : TL("Applies on next start.", "Vale na próxima partida."));
+            ImGui::PopID();
+            if (!live) {
+                ImGui::SameLine();
+                const bool differs = shown != running;
+                ImGui::TextColored(differs ? amber : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled), "%s",
+                                   TL("(next start)", "(próxima partida)"));
+            }
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("%llu", static_cast<unsigned long long>(B::Hits(id)));
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("%s", e.source);
+        }
+        ImGui::EndTable();
+    }
+
+    // A/B switches read once at start (recompiler or device creation): next start only.
+    ImGui::SeparatorText(TL("A/B switches (next start)", "Chaves A/B (próxima partida)"));
+    struct Extra { const char* name; bool (*current)(); };
+    static const Extra extras[] = {
+        {"WQM", Shader::Toggles::WholeQuadMode},
+        {"LDS_SMALL", Shader::Toggles::SmallGroupLdsBarriers},
+        {"LDS_MULTI", Shader::Toggles::MultiWaveLdsBarriers},
+        {"LDS_READLANE", Shader::Toggles::LdsUniformReadLane},
+        {"LANE_DIVERGENCE", Shader::Toggles::LaneDivergence},
+        {"RFL_ALL", Shader::Toggles::ReadFirstLaneAll},
+        {"BLOCK1D", nullptr},
+        {"BC_TINY", nullptr},
+        {"NO_MSAA", nullptr},
+    };
+    static_assert(sizeof(extras) / sizeof(extras[0]) == TlgSettings::kExtraPrefs);
+    if (BeginRows("##extras")) {
+        static const char* const choices[] = {TL("Default", "Padrão"), TL("Off", "Desligado"), TL("On", "Ligado")};
+        static const int values[] = {-1, 0, 1};
+        for (int e = 0; e < TlgSettings::kExtraPrefs; ++e) {
+            char label[64];
+            std::snprintf(label, sizeof(label), "%s%s", extras[e].name,
+                          extras[e].current ? (extras[e].current() ? TL("  (running: on)", "  (rodando: ligado)")
+                                                                    : TL("  (running: off)", "  (rodando: desligado)"))
+                                            : "");
+            ChoiceRow(label, s.extra_pref[e], choices, values, 3,
+                      TL("Read once at start; saved in tlg.ini and applied on the next start.",
+                         "Lida uma vez ao iniciar; gravada no tlg.ini e aplicada na próxima partida."));
+        }
         ImGui::EndTable();
     }
 }
@@ -755,7 +848,7 @@ std::string SaveWhen(s64 mtime) {
         std::snprintf(out, sizeof(out), "%02d/%02d/%04d · %02d:%02d", tm.tm_mday, tm.tm_mon + 1,
                       tm.tm_year + 1900, tm.tm_hour, tm.tm_min);
     } else {
-        static const char* months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        static const char* months[] = {"Jan", "Mar", "Apr", "May", "Jun",
                                        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
         const int hour = tm.tm_hour % 12 ? tm.tm_hour % 12 : 12;
         std::snprintf(out, sizeof(out), "%s %d, %d · %d:%02d %s", months[tm.tm_mon % 12], tm.tm_mday,

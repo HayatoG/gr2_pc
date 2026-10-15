@@ -28,6 +28,13 @@ inline constexpr int OutputHeights[] = {720, 1080, 1440, 2160};
 inline constexpr int OutputCount = 4;
 inline constexpr int OutputDefault = 1; ///< 1920x1080, the game's own size
 
+inline constexpr int kBackportPrefs = 32;
+/// A/B switches read once at start (recompiler_toggles.h, device creation); tlg.ini keys.
+inline constexpr const char* kExtraKeys[] = {"wqm", "lds_small", "lds_multi", "lds_readlane",
+                                             "lane_divergence", "rfl_all", "block1d", "bc_tiny",
+                                             "no_msaa"};
+inline constexpr int kExtraPrefs = sizeof(kExtraKeys) / sizeof(kExtraKeys[0]);
+
 struct Values {
     std::atomic<int> upscaler{UpscalerFsr3};
     std::atomic<int> preset{NativeAA};
@@ -100,6 +107,16 @@ struct Values {
     /// DLSS (tlg_dlss.dll, NVIDIA RTX) is ready, or why not (null before the device exists).
     std::atomic<bool> dlss_supported{false};
     std::atomic<const char*> dlss_problem{nullptr};
+
+    /// Fix switches that apply on the next start (the launcher turns them into TLG_BPnn /
+    /// TLG_<NAME> variables): bp01..bp32 and the A/B keys of ExtraKeys(). -1 = not in tlg.ini
+    /// (the built-in default), 0 / 1 = chosen. Kept so Save() does not drop what the launcher wrote.
+    std::atomic<int> backport_pref[kBackportPrefs];
+    std::atomic<int> extra_pref[kExtraPrefs];
+    Values() {
+        for (auto& p : backport_pref) p = -1;
+        for (auto& p : extra_pref) p = -1;
+    }
 
     /// Startup settings for the explicit TLG_RENDER_RES compatibility patch only.
     int startup_preset = NativeAA;
