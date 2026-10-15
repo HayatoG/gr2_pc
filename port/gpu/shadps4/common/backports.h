@@ -51,7 +51,7 @@ inline constexpr std::array<Entry, static_cast<std::size_t>(Id::Count)> kEntries
     {"BP01", "TLG_BP01", true, false, "free the frame of nested indirect buffers", "shadPS4 #5258"},
     {"BP02", "TLG_BP02", true, false, "FindImageFromRange scans the first page only", "shadPS4 145932bf #5240"},
     {"BP03", "TLG_BP03", true, true, "keep EXEC after an empty divergent branch", "shadPS4 c34ca21f"},
-    {"BP04", "TLG_BP04", true, true, "RCP/RSQ/LOG clamp opcodes without the clamp", "shadPS4 1c2b8f97 #5346"},
+    {"BP04", "TLG_BP04", true, true, "V_RCP/RSQ/LOG_CLAMP and V_RSQ_LEGACY really clamp to +-FLT_MAX", "shadPS4 1c2b8f97 #5346"},
     {"BP05", "TLG_BP05", true, true, "saturate keeps NaN as the GPU does", "shadPS4 #5257"},
     {"BP06", "TLG_BP06", false, true, "VK_KHR_shader_maximal_reconvergence in compute", "SotC 8d84cf7"},
     {"BP07", "TLG_BP07", false, false, "async compile never skips full-screen/indirect draws", "bbport 10baf9d"},
