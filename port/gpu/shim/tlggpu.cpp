@@ -13,6 +13,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <boost/asio/io_context.hpp>
+#include "common/backports.h"
 #include "common/polyfill_thread.h"
 #include "video_core/renderdoc.h"
 #include <cstring>
@@ -217,6 +218,17 @@ static void StartProfileWriter() {
 
 extern "C" int tlggpu_init(const TlgGpuConfig* config) {
     TlgSettings::Load();
+    // tlg: the fixes chosen in the launcher or the in-game menu (bpNN in tlg.ini); an environment
+    // variable TLG_BPnn / ISS_BPnn still wins.
+    {
+        const auto& settings = TlgSettings::Get();
+        for (int i = 0; i < TlgSettings::kBackportPrefs; ++i) {
+            const int pref = settings.backport_pref[i].load();
+            if (pref >= 0) {
+                Common::Backports::ApplyConfig(static_cast<std::size_t>(i), pref != 0);
+            }
+        }
+    }
 #ifdef TLG_PGO_GENERATE
     StartProfileWriter();
 #endif

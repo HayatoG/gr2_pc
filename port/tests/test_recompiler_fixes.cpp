@@ -311,6 +311,25 @@ int main(int argc, char** argv) {
                (wqm ? 0u : 8u) | (Toggles::LaneDivergence() ? 16u : 0u) |
                (Toggles::ReadFirstLaneAll() ? 32u : 0u)),
           "shader cache salt follows the switches");
+    {
+        // Backport switches: tlg.ini choices apply unless the environment sets the entry; only the
+        // live ones can be switched while the game runs.
+        using Common::Backports::Id;
+        unsetenv("TLG_BP10");
+        Common::Backports::ApplyConfig(static_cast<std::size_t>(Id::VertexIndexBarriers), false);
+        Check(!Common::Backports::On(Id::VertexIndexBarriers), "ini choice turns BP10 off");
+        setenv("TLG_BP10", "1", 1);
+        Common::Backports::ApplyConfig(static_cast<std::size_t>(Id::VertexIndexBarriers), true);
+        Check(!Common::Backports::On(Id::VertexIndexBarriers), "environment variable wins over the ini (state kept)");
+        unsetenv("TLG_BP10");
+        Check(Common::Backports::SetLive(Id::VertexIndexBarriers, true) &&
+                  Common::Backports::On(Id::VertexIndexBarriers),
+              "a live backport can be switched in game");
+        const bool before = Common::Backports::On(Id::ClampOpsPlain);
+        Check(!Common::Backports::SetLive(Id::ClampOpsPlain, !before) &&
+                  Common::Backports::On(Id::ClampOpsPlain) == before,
+              "a shader-changing backport refuses a live switch");
+    }
     std::printf("%s\n", failures ? "recompiler fixes: FAILED" : "recompiler fixes: all ok");
     return failures ? 1 : 0;
 }

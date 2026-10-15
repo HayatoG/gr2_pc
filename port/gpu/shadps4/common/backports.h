@@ -100,8 +100,20 @@ inline constexpr std::array<bool, kEntries.size()> kLive{{
     false, // BP09 Image1DAs2D (image creation, shader)
     true,  // BP10 VertexIndexBarriers
     false, // BP11 FirstInstanceDouble (shader)
-    true,  // BP12
+    false, // BP12 (EarlyFragmentTests, shader)
 }};
+
+/// A backport that changes generated shaders (it is part of the shader cache key) can never be
+/// switched while the game runs: the pipelines already built keep the old code.
+constexpr bool LiveMatchesShader() {
+    for (std::size_t i = 0; i < kEntries.size(); ++i) {
+        if (kLive[i] && kEntries[i].shader) {
+            return false;
+        }
+    }
+    return true;
+}
+static_assert(LiveMatchesShader(), "a shader-changing backport cannot be live");
 
 namespace Detail {
 /// 0 = off, 1 = on, set from the environment on first use and by SetLive afterwards.
@@ -121,6 +133,20 @@ inline std::array<std::atomic<std::int8_t>, kEntries.size()>& States() {
 /// State of one backport.
 inline bool On(Id id) {
     return Detail::States()[static_cast<std::size_t>(id)].load(std::memory_order_relaxed) != 0;
+}
+
+/// Applies a choice stored in tlg.ini (bpNN=0/1, read by TlgSettings::Load at start-up), unless the
+/// entry's environment variable is set: the environment (the launcher, a script, a .bat) wins.
+/// Only meant for start-up, before the shaders and the device are built.
+inline void ApplyConfig(std::size_t index, bool on) {
+    if (index >= kEntries.size()) {
+        return;
+    }
+    const char* v = std::getenv(kEntries[index].env);
+    if (v && *v) {
+        return;
+    }
+    Detail::States()[index].store(on ? 1 : 0, std::memory_order_relaxed);
 }
 
 /// Whether the in-game menu may switch this backport without a restart.
