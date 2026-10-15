@@ -8,6 +8,7 @@
 // names reach here as TLG_ (the probe aliases the port prefix at start-up).
 //
 //   TLG_BPnn=0/1      turns one backport off/on (default in the table below)
+//   (the in-game menu switches the ones marked live in kLive; the rest need a restart)
 //   TLG_BACKPORTS=0   turns every backport with a default of "on" off (the baseline of the
 //                     release before them); individual TLG_BPnn still win over it.
 
@@ -84,16 +85,58 @@ inline bool Eval(const Entry& e) {
 }
 } // namespace Detail
 
-/// State of one backport (read once).
-inline bool On(Id id) {
-    static const std::array<bool, kEntries.size()> states = [] {
-        std::array<bool, kEntries.size()> s{};
-        for (std::size_t i = 0; i < s.size(); ++i) {
-            s[i] = Detail::Eval(kEntries[i]);
+/// Backports whose path is chosen at every use, so the in-game menu can switch them while the
+/// game runs. The others change generated shaders, the device or the cache files and only take
+/// effect on the next start.
+inline constexpr std::array<bool, kEntries.size()> kLive{{
+    true,  // BP01 IndirectFrameLeak
+    true,  // BP02 ImageFromRangeFirst
+    false, // BP03 ExecEmptyBranch (shader)
+    false, // BP04 ClampOpsPlain (shader)
+    false, // BP05 SaturateNan (shader)
+    false, // BP06 MaximalReconvergence (device)
+    true,  // BP07 AsyncSkippable
+    false, // BP08 PipelineCacheBlob (loaded at start)
+    false, // BP09 Image1DAs2D (image creation, shader)
+    true,  // BP10 VertexIndexBarriers
+    false, // BP11 FirstInstanceDouble (shader)
+    true,  // BP12
+}};
+
+namespace Detail {
+/// 0 = off, 1 = on, set from the environment on first use and by SetLive afterwards.
+inline std::array<std::atomic<std::int8_t>, kEntries.size()>& States() {
+    static std::array<std::atomic<std::int8_t>, kEntries.size()> states{};
+    static const bool initialized = [] {
+        for (std::size_t i = 0; i < states.size(); ++i) {
+            states[i].store(Eval(kEntries[i]) ? 1 : 0, std::memory_order_relaxed);
         }
-        return s;
+        return true;
     }();
-    return states[static_cast<std::size_t>(id)];
+    (void)initialized;
+    return states;
+}
+} // namespace Detail
+
+/// State of one backport.
+inline bool On(Id id) {
+    return Detail::States()[static_cast<std::size_t>(id)].load(std::memory_order_relaxed) != 0;
+}
+
+/// Whether the in-game menu may switch this backport without a restart.
+inline bool IsLive(Id id) {
+    return kLive[static_cast<std::size_t>(id)];
+}
+
+/// Switches a live backport; returns false (and changes nothing) for the ones that need a restart.
+inline bool SetLive(Id id, bool on) {
+    if (!IsLive(id)) {
+        return false;
+    }
+    Detail::States()[static_cast<std::size_t>(id)].store(on ? 1 : 0, std::memory_order_relaxed);
+    std::printf("Backports: %s switched to %d in game\n", kEntries[static_cast<std::size_t>(id)].id,
+                on ? 1 : 0);
+    return true;
 }
 
 /// Counts one use of the backport (cheap; call where the changed path actually runs).
