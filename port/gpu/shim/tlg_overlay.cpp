@@ -271,6 +271,16 @@ void MultiplierRow(const char* label, std::atomic<float>& value, const char* hel
     ImGui::PopID();
 }
 
+void FloatRow(const char* label, std::atomic<float>& value, float lo, float hi, const char* format, const char* help) {
+    Row(label);
+    float v = value;
+    if (ImGui::SliderFloat("##value", &v, lo, hi, format, ImGuiSliderFlags_AlwaysClamp)) {
+        Store(value, std::clamp(v, lo, hi), true);
+    }
+    Help(help);
+    ImGui::PopID();
+}
+
 void InfoRow(const char* label, const char* text) {
     Row(label);
     ImGui::TextDisabled("%s", text);
@@ -486,6 +496,43 @@ void FixesSection() {
     }
 }
 
+void ControlsTab() {
+    auto& s = TlgSettings::Get();
+    // Mouse (src/runtime_pad.c): the camera settings apply at once. The buttons and the touchpad
+    // mode are fixed unless TLG_KEY_MAP / TLG_MOUSE_PAD_* (or tlg.ini key_map) change them.
+    ImGui::SeparatorText(TL("Mouse", "Mouse"));
+    if (BeginRows("##mouse")) {
+        CheckRow(TL("Mouse turns the camera", "Mouse gira a câmera"), s.mouse_enabled,
+                 TL("The game window takes the mouse while it has focus. Esc releases it; a click in the window takes it back.",
+                    "A janela do jogo prende o mouse enquanto tem o foco. Esc solta; um clique na janela prende de novo."));
+        ImGui::BeginDisabled(!s.mouse_enabled);
+        FloatRow(TL("Sensitivity", "Sensibilidade"), s.mouse_sensitivity, 0.1f, 5.0f, "%.2f",
+                 TL("How far the camera turns for the same mouse movement.", "Quanto a câmera gira para o mesmo movimento do mouse."));
+        CheckRow(TL("Invert Y axis", "Inverter eixo Y"), s.mouse_invert_y,
+                 TL("Moving the mouse forward looks down.", "Empurrar o mouse para frente olha para baixo."));
+        FloatRow(TL("Smoothing", "Suavização"), s.mouse_smoothing, 0.0f, 0.9f, "%.2f",
+                 TL("Evens out the camera motion; higher values feel softer and a little slower.",
+                    "Deixa o movimento da câmera mais uniforme; valores altos ficam mais suaves e um pouco mais lentos."));
+        FloatRow(TL("Acceleration", "Aceleração"), s.mouse_accel, 0.0f, 2.0f, "%.2f",
+                 TL("Fast movements turn more than slow ones. 0 is linear.", "Movimentos rápidos giram mais que os lentos. 0 é linear."));
+        FloatRow(TL("Anti-dead zone", "Anti-zona morta"), s.mouse_deadzone, 0.0f, 0.5f, "%.2f",
+                 TL("Small mouse movements skip the game's stick dead zone. Raise it if slow movements do nothing.",
+                    "Movimentos pequenos do mouse pulam a zona morta do analógico do jogo. Aumente se movimentos lentos não fizerem nada."));
+        ImGui::EndDisabled();
+        InfoRow(TL("Left / right / middle", "Esquerdo / direito / do meio"), "R1 / L1 / R2");
+        InfoRow(TL("Touchpad mode", "Modo touchpad"), TL("hold Left Ctrl or Mouse X1", "segure Ctrl esquerdo ou botão X1 do mouse"));
+        InfoRow(TL("In touchpad mode", "No modo touchpad"),
+                TL("left touch/click/drag, middle touch, right two fingers", "esquerdo toca/clica/arrasta, do meio toca, direito dois dedos"));
+        InfoRow(TL("Release the mouse", "Soltar o mouse"), "Esc");
+        const char* env = std::getenv("TLG_KEY_MAP");
+        const std::string remap = env && env[0] ? std::string(env) : s.key_map;
+        if (!remap.empty()) {
+            InfoRow(TL("Remapped", "Remapeado"), remap.c_str());
+        }
+        ImGui::EndTable();
+    }
+}
+
 void OverlayTab() {
     namespace P = TlgPerfStats;
     auto& s = TlgSettings::Get();
@@ -575,7 +622,7 @@ void Menu() {
         return;
     }
     footer_help = nullptr;
-    constexpr int TabCount = 3;
+    constexpr int TabCount = 4;
     const ImGuiIO& io = ImGui::GetIO();
     if (!io.WantTextInput) {
         const int step = ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false) || ImGui::IsKeyPressed(ImGuiKey_E, false) ? 1
@@ -588,7 +635,8 @@ void Menu() {
     }
     const float footer = ImGui::GetFrameHeightWithSpacing() * 2.0f + ImGui::GetTextLineHeightWithSpacing() * 2.0f;
     if (ImGui::BeginTabBar("##tabs")) {
-        static const char* const tabs[TabCount] = {"Overlay", TL("Image", "Imagem"), TL("Performance", "Desempenho")};
+        static const char* const tabs[TabCount] = {"Overlay", TL("Image", "Imagem"), TL("Performance", "Desempenho"),
+                                                   TL("Controls", "Controle")};
         for (int tab = 0; tab < TabCount; ++tab) {
             const ImGuiTabItemFlags flags = requested_tab == tab ? ImGuiTabItemFlags_SetSelected : 0;
             if (!ImGui::BeginTabItem(tabs[tab], nullptr, flags)) {
@@ -602,6 +650,7 @@ void Menu() {
                 switch (tab) {
                 case 1: ImageTab(); break;
                 case 2: PerformanceTab(); break;
+                case 3: ControlsTab(); break;
                 default: OverlayTab(); break;
                 }
             }
@@ -1253,6 +1302,38 @@ void NoticeBox() {
     ImGui::End();
 }
 
+// The mouse's touchpad (touchpad mode): the pad as the game sees it and the finger on it.
+std::atomic<bool> mouse_pad_on{false}, mouse_pad_touch{false}, mouse_pad_click{false};
+std::atomic<float> mouse_pad_x{0.5f}, mouse_pad_y{0.5f};
+
+void MousePadBox() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float w = 240.0f * base_scale, h = w * 942.0f / 1919.0f;
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + 24.0f * base_scale,
+                                   viewport->WorkPos.y + viewport->WorkSize.y - 24.0f * base_scale),
+                            ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.45f);
+    ImGui::SetNextWindowSize(ImVec2(w + 16.0f * base_scale, h + 16.0f * base_scale));
+    ImGui::Begin("##mousepad", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+                     ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoSavedSettings);
+    const ImVec2 origin = ImVec2(ImGui::GetWindowPos().x + 8.0f * base_scale, ImGui::GetWindowPos().y + 8.0f * base_scale);
+    ImDrawList* list = ImGui::GetWindowDrawList();
+    const bool click = mouse_pad_click, touch = mouse_pad_touch;
+    list->AddRectFilled(origin, ImVec2(origin.x + w, origin.y + h), IM_COL32(20, 20, 20, 160), 6.0f * base_scale);
+    list->AddRect(origin, ImVec2(origin.x + w, origin.y + h), click ? IM_COL32(255, 200, 60, 255) : IM_COL32(220, 220, 220, 200),
+                  6.0f * base_scale, 0, 2.0f * base_scale);
+    const ImVec2 finger(origin.x + std::clamp(mouse_pad_x.load(), 0.0f, 1.0f) * w,
+                        origin.y + std::clamp(mouse_pad_y.load(), 0.0f, 1.0f) * h);
+    const float r = 7.0f * base_scale;
+    if (touch) {
+        list->AddCircleFilled(finger, r, click ? IM_COL32(255, 200, 60, 255) : IM_COL32(80, 200, 255, 255));
+    } else {
+        list->AddCircle(finger, r, IM_COL32(255, 255, 255, 220), 0, 2.0f * base_scale);
+    }
+    ImGui::End();
+}
+
 void BackgroundLoading() {
     const u32 done = background_done, total = std::max(background_total.load(), 1u);
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -1627,12 +1708,20 @@ static bool NoticeActive() {
     return std::chrono::steady_clock::now() < notice_until;
 }
 
+void SetMousePad(bool active, float x, float y, bool touching, bool clicking) {
+    mouse_pad_x = x;
+    mouse_pad_y = y;
+    mouse_pad_touch = touching;
+    mouse_pad_click = clicking;
+    mouse_pad_on = active;
+}
+
 bool Visible() {
     const auto& s = TlgSettings::Get();
     const auto now = std::chrono::steady_clock::now();
     return initialized && (loading || background_total || menu_open || text_entry_active || choice_active ||
                            message_active || progress_on || now < progress_until || now < toast_until ||
-                           NoticeActive() ||
+                           NoticeActive() || mouse_pad_on ||
                            choice_retiring || s.show_fps ||
                            (s.actor_watch_supported && s.enemy_health_bar));
 }
@@ -1795,6 +1884,9 @@ void Render(vk::CommandBuffer cmdbuf, vk::ImageView view, vk::Extent2D extent) {
     }
     if (NoticeActive() && !menu_open) {
         NoticeBox();
+    }
+    if (mouse_pad_on && !menu_open) {
+        MousePadBox();
     }
     ImGui::Render();
 

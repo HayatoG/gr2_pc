@@ -390,6 +390,10 @@ extern "C" void tlggpu_input_settings(TlgGpuInputSettings* out) {
     std::snprintf(out->key_map, sizeof(out->key_map), "%s", s.key_map.c_str());
 }
 
+extern "C" void tlggpu_mouse_pad_hud(int active, float x, float y, int touching, int clicking) {
+    TlgOverlay::SetMousePad(active != 0, x, y, touching != 0, clicking != 0);
+}
+
 extern "C" int tlggpu_text_input_begin(const char* initial, const char* prompt) {
     if (!g_window) return 0;
     g_window->BeginTextInput(initial ? initial : "", prompt ? prompt : "Text");

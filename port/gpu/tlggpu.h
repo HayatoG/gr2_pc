@@ -86,6 +86,10 @@ typedef struct {
     char key_map[512];
 } TlgGpuInputSettings;
 void tlggpu_input_settings(TlgGpuInputSettings *settings);
+/* Touchpad mode of the mouse (runtime_pad.c): while active, a small touchpad with the virtual
+ * finger is drawn in the corner (x, y: 0..1 over the pad; touching: the game sees the finger;
+ * clicking: the pad is pressed). */
+void tlggpu_mouse_pad_hud(int active, float x, float y, int touching, int clicking);
 /* Number of symbols registered by the vendored libraries (diagnostics). */
 unsigned tlggpu_symbol_count(void);
 #ifdef __cplusplus
