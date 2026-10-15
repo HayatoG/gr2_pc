@@ -144,6 +144,11 @@ inline void Hit(Id id) {
     Detail::Hits()[static_cast<std::size_t>(id)].fetch_add(1, std::memory_order_relaxed);
 }
 
+/// Hits counted so far for one backport (the in-game menu shows it).
+inline std::uint64_t Hits(Id id) {
+    return Detail::Hits()[static_cast<std::size_t>(id)].load(std::memory_order_relaxed);
+}
+
 /// Bits for the shader binary cache version: shaders recompiled under other states must not be
 /// reused (the cache key only hashes the recompiler sources). Fits in 8 bits.
 inline std::uint32_t ShaderSalt() {
