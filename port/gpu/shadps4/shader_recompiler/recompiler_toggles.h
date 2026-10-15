@@ -79,7 +79,7 @@ inline std::uint32_t PerLoopBudget() {
 }
 
 /// Loop budget part of the shader binary salt: 0 with the defaults; otherwise
-/// a 16-bit hash of the budgets (never 0).
+/// a 10-bit hash of the budgets (never 0).
 inline std::uint32_t LoopBudgetSalt() {
     const std::uint32_t total = LoopBudget();
     const std::uint32_t own = PerLoopBudget();
@@ -92,7 +92,7 @@ inline std::uint32_t LoopBudgetSalt() {
             h = (h ^ ((value >> shift) & 0xffu)) * 16777619u;
         }
     }
-    h = (h ^ (h >> 16)) & 0xffffu;
+    h = (h ^ (h >> 16)) & 0x3ffu; // 10 bits: the cache version keeps it above bit 20
     return h == 0 ? 1u : h;
 }
 
@@ -155,8 +155,7 @@ inline bool ReadFirstLaneAll() {
 inline std::uint32_t ShaderBinarySalt() {
     return (SmallGroupLdsBarriers() ? 1u : 0u) | (MultiWaveLdsBarriers() ? 2u : 0u) |
            (LdsUniformReadLane() ? 4u : 0u) | (WholeQuadMode() ? 0u : 8u) |
-           (LaneDivergence() ? 16u : 0u) | (ReadFirstLaneAll() ? 32u : 0u) |
-           (LoopBudgetSalt() << 6);
+           (LaneDivergence() ? 16u : 0u) | (ReadFirstLaneAll() ? 32u : 0u);
 }
 
 /// One line per switch with its state (shown once, when the GPU starts). Takes the logger as a

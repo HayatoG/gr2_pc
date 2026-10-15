@@ -1,0 +1,145 @@
+// SPDX-FileCopyrightText: Copyright 2026 shadPS4 Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+// tlg: switches and counters for the fixes backported from other PS4 ports and from shadPS4
+// upstream (iss_pc catalog of 2026-10-15). One entry per backport, so a bad scene can be traced
+// to the exact change: every switch is logged once at start-up ("Backports: BPnn ..."), every
+// hit is counted and the non-zero counters are printed with the frame statistics. The ISS_/GR2_
+// names reach here as TLG_ (the probe aliases the port prefix at start-up).
+//
+//   TLG_BPnn=0/1      turns one backport off/on (default in the table below)
+//   TLG_BACKPORTS=0   turns every backport with a default of "on" off (the baseline of the
+//                     release before them); individual TLG_BPnn still win over it.
+
+#pragma once
+
+#include <array>
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+
+namespace Common::Backports {
+
+enum class Id : unsigned {
+    IndirectFrameLeak,    // BP01 shadPS4 #5258
+    ImageFromRangeFirst,  // BP02 shadPS4 145932bf (#5240)
+    ExecEmptyBranch,      // BP03 shadPS4 c34ca21f
+    ClampOpsPlain,        // BP04 shadPS4 1c2b8f97 / #5346
+    SaturateNan,          // BP05 shadPS4 #5257
+    MaximalReconvergence, // BP06 SotC 8d84cf7
+    AsyncSkippable,       // BP07 bbport 10baf9d
+    PipelineCacheBlob,    // BP08 Mrsuss b972798 + 0xCydral bdb9769
+    Image1DAs2D,          // BP09 CTR GetLostIn d26bcb2
+    VertexIndexBarriers,  // BP10 shadPS4 #5262
+    FirstInstanceDouble,  // BP11 shadPS4 #5348
+    ShadPS4Pr5264,        // BP12 shadPS4 #5264
+    Count,
+};
+
+struct Entry {
+    const char* id;     // "BP01"
+    const char* env;    // TLG_BP01
+    bool default_on;
+    bool shader;        // changes the generated shaders (part of the shader cache key)
+    const char* what;
+    const char* source;
+};
+
+inline constexpr std::array<Entry, static_cast<std::size_t>(Id::Count)> kEntries{{
+    {"BP01", "TLG_BP01", true, false, "free the frame of nested indirect buffers", "shadPS4 #5258"},
+    {"BP02", "TLG_BP02", true, false, "FindImageFromRange scans the first page only", "shadPS4 145932bf #5240"},
+    {"BP03", "TLG_BP03", true, true, "keep EXEC after an empty divergent branch", "shadPS4 c34ca21f"},
+    {"BP04", "TLG_BP04", true, true, "RCP/RSQ/LOG clamp opcodes without the clamp", "shadPS4 1c2b8f97 #5346"},
+    {"BP05", "TLG_BP05", true, true, "saturate keeps NaN as the GPU does", "shadPS4 #5257"},
+    {"BP06", "TLG_BP06", false, true, "VK_KHR_shader_maximal_reconvergence in compute", "SotC 8d84cf7"},
+    {"BP07", "TLG_BP07", false, false, "async compile never skips full-screen/indirect draws", "bbport 10baf9d"},
+    {"BP08", "TLG_BP08", false, false, "persist the driver VkPipelineCache blob", "Mrsuss b972798, 0xCydral bdb9769"},
+    {"BP09", "TLG_BP09", false, true, "every 1D image as 2D with height 1", "CTR d26bcb2"},
+    {"BP10", "TLG_BP10", true, false, "barriers for vertex/index/indirect buffers", "shadPS4 #5262"},
+    {"BP11", "TLG_BP11", true, true, "firstInstance counted once in indirect draws", "shadPS4 #5348"},
+    {"BP12", "TLG_BP12", true, false, "shadPS4 #5264", "shadPS4 #5264"},
+}};
+
+namespace Detail {
+inline bool Master() {
+    static const bool on = [] {
+        const char* v = std::getenv("TLG_BACKPORTS");
+        return !(v && *v) || std::atoi(v) != 0;
+    }();
+    return on;
+}
+
+inline std::array<std::atomic<std::uint64_t>, kEntries.size()>& Hits() {
+    static std::array<std::atomic<std::uint64_t>, kEntries.size()> hits{};
+    return hits;
+}
+
+inline bool Eval(const Entry& e) {
+    const char* v = std::getenv(e.env);
+    if (v && *v) {
+        return std::atoi(v) != 0;
+    }
+    return e.default_on && Master();
+}
+} // namespace Detail
+
+/// State of one backport (read once).
+inline bool On(Id id) {
+    static const std::array<bool, kEntries.size()> states = [] {
+        std::array<bool, kEntries.size()> s{};
+        for (std::size_t i = 0; i < s.size(); ++i) {
+            s[i] = Detail::Eval(kEntries[i]);
+        }
+        return s;
+    }();
+    return states[static_cast<std::size_t>(id)];
+}
+
+/// Counts one use of the backport (cheap; call where the changed path actually runs).
+inline void Hit(Id id) {
+    Detail::Hits()[static_cast<std::size_t>(id)].fetch_add(1, std::memory_order_relaxed);
+}
+
+/// Bits for the shader binary cache version: shaders recompiled under other states must not be
+/// reused (the cache key only hashes the recompiler sources). Fits in 8 bits.
+inline std::uint32_t ShaderSalt() {
+    std::uint32_t salt = 0;
+    std::uint32_t bit = 1;
+    for (std::size_t i = 0; i < kEntries.size(); ++i) {
+        if (kEntries[i].shader) {
+            salt |= On(static_cast<Id>(i)) ? bit : 0u;
+            bit <<= 1;
+        }
+    }
+    return salt;
+}
+
+/// One line per backport, once at start-up (the run log keeps stdout).
+inline void LogStates() {
+    for (std::size_t i = 0; i < kEntries.size(); ++i) {
+        const Entry& e = kEntries[i];
+        std::printf("Backports: %s %s=%d (%s; %s)\n", e.id, e.env,
+                    On(static_cast<Id>(i)) ? 1 : 0, e.what, e.source);
+    }
+}
+
+/// With the frame statistics: the counters that moved since the last call, as totals.
+inline void LogHits() {
+    static std::array<std::uint64_t, kEntries.size()> last{};
+    bool header = false;
+    for (std::size_t i = 0; i < kEntries.size(); ++i) {
+        const std::uint64_t now = Detail::Hits()[i].load(std::memory_order_relaxed);
+        if (now != last[i]) {
+            std::printf("%s%s %llu", header ? ", " : "Backport hits (total): ", kEntries[i].id,
+                        static_cast<unsigned long long>(now));
+            header = true;
+            last[i] = now;
+        }
+    }
+    if (header) {
+        std::printf("\n");
+    }
+}
+
+} // namespace Common::Backports

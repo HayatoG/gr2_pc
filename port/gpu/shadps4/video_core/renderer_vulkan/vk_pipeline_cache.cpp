@@ -10,6 +10,7 @@
 #include <ranges>
 #include <string>
 #include <unordered_set>
+#include "common/backports.h"
 #include "tlg_threads.h"
 
 #include "common/hash.h"
@@ -404,6 +405,7 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
     Shader::Toggles::LogStates([](const char* name, bool on, const char* what) {
         std::printf("GPU: shader switch %s=%d (%s)\n", name, on ? 1 : 0, what);
     });
+    Common::Backports::LogStates();
     std::printf("GPU: host subgroup size %u, LDS barriers %s\n", profile.subgroup_size,
                 profile.needs_lds_barriers ? "on" : "off");
 

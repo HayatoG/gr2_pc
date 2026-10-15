@@ -16,6 +16,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #endif
+#include "common/backports.h"
 #include "common/serdes.h"
 #include "common/scope_exit.h"
 #include "video_core/renderer_vulkan/vk_pipeline_serialization.h"
@@ -45,7 +46,10 @@ namespace {
 // budgets TLG_LOOP_LIMIT / TLG_LOOP_LIMIT_PER_LOOP, TLG_LDS_SMALL/MULTI/READLANE, TLG_WQM,
 // TLG_LANE_DIVERGENCE, TLG_RFL_ALL) get their own shader binary cache version.
 u32 CurrentShaderBinaryVersion() {
-    return Serialization::ShaderBinaryVersion + 64u * Shader::Toggles::ShaderBinarySalt();
+    // base < 64, recompiler fixes < 64, backports from bit 12, loop budget hash from bit 20.
+    return Serialization::ShaderBinaryVersion + 64u * Shader::Toggles::ShaderBinarySalt() +
+           4096u * Common::Backports::ShaderSalt() +
+           (1u << 20) * Shader::Toggles::LoopBudgetSalt();
 }
 } // namespace
 
