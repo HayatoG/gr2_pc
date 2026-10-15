@@ -59,7 +59,7 @@ inline constexpr std::array<Entry, static_cast<std::size_t>(Id::Count)> kEntries
     {"BP09", "TLG_BP09", false, true, "every 1D image as 2D with height 1", "CTR d26bcb2"},
     {"BP10", "TLG_BP10", true, false, "barriers for vertex/index/indirect buffers", "shadPS4 #5262"},
     {"BP11", "TLG_BP11", true, true, "firstInstance counted once in indirect draws", "shadPS4 #5348"},
-    {"BP12", "TLG_BP12", true, false, "shadPS4 #5264", "shadPS4 #5264"},
+    {"BP12", "TLG_BP12", true, true, "EarlyFragmentTests when DEPTH_BEFORE_SHADER is set", "shadPS4 7d28d279 #5264"},
 }};
 
 namespace Detail {

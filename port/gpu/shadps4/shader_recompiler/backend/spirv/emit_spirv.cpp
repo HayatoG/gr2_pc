@@ -3,6 +3,7 @@
 
 #include <span>
 #include <unordered_map>
+#include "common/backports.h"
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -504,6 +505,11 @@ void DefineEntryPoint(const Info& info, EmitContext& ctx, Id main) {
         }
         if (info.stores.GetAny(IR::Attribute::Depth)) {
             ctx.AddExecutionMode(main, spv::ExecutionMode::DepthReplacing);
+        } else if (ctx.runtime_info.hw.fs.depth_before_shader) {
+            // tlg: BP12 (shadPS4 7d28d279, #5264). Upstream asserts when the shader also exports
+            // Z; here that case just keeps late tests (no EarlyFragmentTests).
+            ctx.AddExecutionMode(main, spv::ExecutionMode::EarlyFragmentTests);
+            Common::Backports::Hit(Common::Backports::Id::ShadPS4Pr5264);
         }
         break;
     case SwStage::Geometry:
