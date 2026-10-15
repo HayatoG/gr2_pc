@@ -44,6 +44,13 @@ def parse_cpu_features(output):
     return []
 
 
+def red_zone_wanted(env):
+    """Windows red-zone protection (scripts/red_zone.py): default on Windows, GR2_RED_ZONE_REWRITE (or
+    TLG_RED_ZONE_REWRITE)=0 off; on Linux only =1 (tests)."""
+    policy = env.get('GR2_RED_ZONE_REWRITE') or env.get('TLG_RED_ZONE_REWRITE', '')
+    return policy != '0' if os.name == 'nt' else policy == '1'
+
+
 def isa_rewrite_wanted(missing, env):
     """GR2_ISA_REWRITE (or TLG_ISA_REWRITE)=0 disables the ISA rewrite table; 1 or a list of sets
     ("sse4a", "movbe,bmi1") forces it (tlg-probe rewrites those sets); otherwise the CPU decides."""
@@ -139,9 +146,10 @@ def main():
         run_script('link_modules.py', game, '--out', out)
         # A failed rewrite prints its reason and the game starts without the table.
         isa_args = []
-        if isa_rewrite_wanted(missing, env):
+        red_zone = red_zone_wanted(env)
+        if isa_rewrite_wanted(missing, env) or red_zone:
             code, output = run_script('isa_rewrite.py', out / 'boot-linked.bin', '--out', out,
-                                      capture=True, check=False)
+                                      *(['--red-zone'] if red_zone else []), capture=True, check=False)
             print(output, end='', flush=True)
             if code == 0:
                 isa_args = ['--isa-rewrite', str(out / 'isa-rewrite.bin')]

@@ -8,6 +8,9 @@
 *.plt
 # Exception: synthetic 448-byte x86 image for the ISA rewrite tests (upstream gow3_pc), no game code
 !port/tests/data/isa_fixture.bin
+# Exception: synthetic red-zone test image and table (tests/test_red_zone.py --write), no game code
+!port/tests/data/red_zone_image.bin
+!port/tests/data/red_zone_table.bin
 
 # Ferramentas de terceiros (Ghidra, JDK, GhidraOrbis): instaladas localmente
 /tools/
