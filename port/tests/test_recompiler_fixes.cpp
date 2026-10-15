@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <span>
+#include "common/backports.h"
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/frontend/translate/translate.h"
 #include "shader_recompiler/ir/ir_emitter.h"
@@ -144,12 +145,68 @@ static u32 WqmQuadBroadcasts(Gcn::OperandField dst, Gcn::OperandField src) {
     return broadcasts;
 }
 
+// BP04: V_RCP_CLAMP_F32 / V_RSQ_CLAMP_F32 / V_LOG_CLAMP_F32 clamp to +-FLT_MAX (FPClamp32).
+static u32 ClampOpClamps(Gcn::Opcode opcode) {
+    Info info{};
+    info.hw_stage = HwStage::Fragment;
+    info.sw_stage = SwStage::Fragment;
+    RuntimeInfo runtime{};
+    runtime.Initialize(HwStage::Fragment, SwStage::Fragment);
+    Profile profile{};
+    Gcn::Translator translator(info, runtime, profile);
+    Gcn::GcnInst inst{};
+    inst.opcode = opcode;
+    inst.encoding = Gcn::InstEncoding::VOP1;
+    inst.category = Gcn::InstCategory::VectorALU;
+    inst.length = 4;
+    inst.src_count = 1;
+    inst.dst_count = 1;
+    inst.src[0].field = Gcn::OperandField::VectorGPR;
+    inst.dst[0].field = Gcn::OperandField::VectorGPR;
+    inst.src[0].code = 1;
+    inst.dst[0].code = 2;
+    Common::ObjectPool<IR::Inst> pool;
+    IR::Block block(pool);
+    translator.Translate(&block, 0, IR::Condition::True, std::span<const Gcn::GcnInst>{&inst, 1});
+    return Count(block, IR::Opcode::FPClamp32);
+}
+
+// BP06: in a 32-thread workgroup a ReadLane of lane 32 (past the populated lanes) after a
+// reduction step becomes the reduction identity; without the backport it is left alone.
+static u32 ReadLanePastWorkgroup(u32 host_subgroup) {
+    Info info{};
+    info.hw_stage = HwStage::Compute;
+    info.sw_stage = SwStage::Compute;
+    RuntimeInfo runtime{};
+    runtime.Initialize(HwStage::Compute, SwStage::Compute);
+    runtime.hw.cs.workgroup_size = {32, 1, 1};
+    Common::ObjectPool<IR::Inst> pool;
+    IR::Block block(pool);
+    IR::IREmitter ir(block);
+    const IR::U32 x = ir.GetAttributeU32(IR::Attribute::LocalInvocationId, 0);
+    const IR::U32 step{ir.IAdd(x, ir.ShuffleXor(x, ir.Imm32(16u)))};
+    const IR::U32 half = ir.ReadLane(step, ir.Imm32(32u));
+    ir.WriteShared(32, half, ir.Imm32(0u));
+    ir.Epilogue();
+    IR::Program program(info);
+    program.blocks.push_back(&block);
+    program.post_order_blocks.push_back(&block);
+    program.syntax_list.push_back({.data = {.block = &block},
+                                   .type = IR::AbstractSyntaxNode::Type::Block});
+    program.syntax_list.push_back({.type = IR::AbstractSyntaxNode::Type::Return});
+    Profile profile{};
+    profile.subgroup_size = host_subgroup;
+    Optimization::LowerWave64BallotPass(program, runtime, profile);
+    return Count(block, IR::Opcode::ReadLane);
+}
+
 int main(int argc, char** argv) {
     // Exercise the new paths unless the caller chose (no game serial here: the default needs one).
     setenv("TLG_LDS_SMALL", "1", 0);
     setenv("TLG_LDS_MULTI", "1", 0);
     setenv("TLG_LDS_READLANE", "1", 0);
     setenv("TLG_LANE_DIVERGENCE", "1", 0);
+    setenv("TLG_BP06", "1", 0); // default off: exercise it unless the caller chose
     const bool small = Toggles::SmallGroupLdsBarriers();
     const bool multi = Toggles::MultiWaveLdsBarriers();
     const bool wqm = Toggles::WholeQuadMode();
@@ -233,6 +290,22 @@ int main(int argc, char** argv) {
           "s_wqm_b64 vcc, exec grows the mask to quads with TLG_WQM");
     Check(WqmQuadBroadcasts(Gcn::OperandField::ExecLo, Gcn::OperandField::ExecLo) == 0,
           "s_wqm_b64 exec, exec stays a no-op");
+    {
+        using Common::Backports::Id;
+        const bool bp04 = Common::Backports::On(Id::ClampOpsPlain);
+        const u32 want = bp04 ? 1u : 0u;
+        Check(ClampOpClamps(Gcn::Opcode::V_RCP_CLAMP_F32) == want, "BP04: v_rcp_clamp_f32 clamps");
+        Check(ClampOpClamps(Gcn::Opcode::V_RSQ_CLAMP_F32) == want, "BP04: v_rsq_clamp_f32 clamps");
+        Check(ClampOpClamps(Gcn::Opcode::V_LOG_CLAMP_F32) == want, "BP04: v_log_clamp_f32 clamps");
+        Check(ClampOpClamps(Gcn::Opcode::V_RSQ_F32) == 0, "BP04: v_rsq_f32 stays unclamped");
+        const bool bp06 = Common::Backports::On(Id::MaximalReconvergence);
+        // 32-lane host: the read is replaced with BP06; 64-lane host: likewise (it used to return
+        // before touching the shader).
+        Check(ReadLanePastWorkgroup(32) == (bp06 ? 0u : 1u),
+              "BP06: readlane 32 in a 32-thread workgroup, 32-wide host");
+        Check(ReadLanePastWorkgroup(64) == (bp06 ? 0u : 1u),
+              "BP06: readlane 32 in a 32-thread workgroup, 64-wide host");
+    }
     Check(Toggles::ShaderBinarySalt() ==
               ((small ? 1u : 0u) | (multi ? 2u : 0u) | (Toggles::LdsUniformReadLane() ? 4u : 0u) |
                (wqm ? 0u : 8u) | (Toggles::LaneDivergence() ? 16u : 0u) |

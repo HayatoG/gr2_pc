@@ -472,6 +472,11 @@ public:
                image_2d_view_of_3d_features.sampler2DViewOf3D;
     }
 
+    /// tlg: BP06. True only when the backport is on and the device enabled the extension + feature.
+    bool IsMaximalReconvergenceSupported() const {
+        return maximal_reconvergence;
+    }
+
     /// Returns whether VK_EXT_image_view_min_lod is supported.
     bool IsImageViewMinLodSupported() const {
         return image_view_min_lod;
@@ -572,6 +577,7 @@ private:
     bool attachment_feedback_loop{};
     bool image_2d_view_of_3d{};
     bool image_view_min_lod{};
+    bool maximal_reconvergence{};
     bool shader_clock{};
     bool compute_shader_derivatives{};
     bool mixed_float_dot_product{}; // tlg: VK_VALVE_shader_mixed_float_dot_product (FSR 4.1.1)

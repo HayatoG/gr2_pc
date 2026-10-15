@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2024 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <boost/container/static_vector.hpp>
@@ -8,6 +9,7 @@
 #include <fmt/ranges.h>
 
 #include "common/assert.h"
+#include "common/backports.h"
 #include "common/debug.h"
 #include "common/types.h"
 #include "imgui/renderer/imgui_core.h"
@@ -408,6 +410,24 @@ bool Instance::CreateDevice() {
                  image_2d_view_of_3d_features.sampler2DViewOf3D);
     }
     image_view_min_lod = add_extension(VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME);
+    // tlg: BP06 (SotC 8d84cf7). Detected at run time: the extension is listed and the feature
+    // reports true; only then is it enabled. Off by default, so the device is created exactly as
+    // before unless TLG_BP06=1.
+    maximal_reconvergence = false;
+    if (Common::Backports::On(Common::Backports::Id::MaximalReconvergence) &&
+        std::ranges::find(available_extensions, std::string{VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME}) !=
+            available_extensions.end()) {
+        const auto reconvergence_features =
+            physical_device
+                .getFeatures2<vk::PhysicalDeviceFeatures2,
+                              vk::PhysicalDeviceShaderMaximalReconvergenceFeaturesKHR>()
+                .get<vk::PhysicalDeviceShaderMaximalReconvergenceFeaturesKHR>();
+        if (reconvergence_features.shaderMaximalReconvergence) {
+            maximal_reconvergence = add_extension(VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME);
+        } else {
+            LOG_WARNING(Render_Vulkan, "BP06: shaderMaximalReconvergence feature not supported");
+        }
+    }
     supports_memory_budget = add_extension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     // tlg: FSR 4 v07 INT8 (vk_temporal_upscaler): quad derivatives in compute shaders.
     compute_shader_derivatives = add_extension(VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME);
@@ -615,6 +635,9 @@ bool Instance::CreateDevice() {
         vk::PhysicalDeviceImageViewMinLodFeaturesEXT{
             .minLod = true,
         },
+        vk::PhysicalDeviceShaderMaximalReconvergenceFeaturesKHR{
+            .shaderMaximalReconvergence = true,
+        },
         vk::PhysicalDeviceShaderClockFeaturesKHR{
             .shaderSubgroupClock = shader_clock_features.shaderSubgroupClock,
         },
@@ -677,6 +700,9 @@ bool Instance::CreateDevice() {
     }
     if (!image_view_min_lod) {
         device_chain.unlink<vk::PhysicalDeviceImageViewMinLodFeaturesEXT>();
+    }
+    if (!maximal_reconvergence) {
+        device_chain.unlink<vk::PhysicalDeviceShaderMaximalReconvergenceFeaturesKHR>();
     }
     if (!shader_clock) {
         device_chain.unlink<vk::PhysicalDeviceShaderClockFeaturesKHR>();

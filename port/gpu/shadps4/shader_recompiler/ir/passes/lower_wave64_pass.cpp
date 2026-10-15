@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <optional>
 #include <string>
+#include "common/backports.h"
 #include "common/logging/classes.h"
 #include "shader_recompiler/info.h"
 #include "shader_recompiler/ir/basic_block.h"
@@ -169,15 +171,112 @@ std::vector<IR::Block*> FindWave64UniformBlocks(const IR::Program& program) {
     return blocks;
 }
 
+// tlg: BP06 (SotC 8d84cf7). Lane identity of a reduction step, when value = op(x, ShuffleXor(x, k)).
+// Based on the wave64_missing_lane_identity workaround of Pink-shadPS4 (luizgustavs).
+static const IR::Inst* SkipBitCasts(const IR::Value& value) {
+    if (value.IsImmediate()) {
+        return nullptr;
+    }
+    const IR::Inst* inst = value.Inst();
+    while (inst->GetOpcode() == IR::Opcode::BitCastU32F32 ||
+           inst->GetOpcode() == IR::Opcode::BitCastF32U32) {
+        if (inst->Arg(0).IsImmediate()) {
+            return nullptr;
+        }
+        inst = inst->Arg(0).Inst();
+    }
+    return inst;
+}
+
+static std::optional<u32> ReductionIdentity(const IR::Value& value) {
+    const IR::Inst* op = SkipBitCasts(value);
+    if (!op || op->NumArgs() != 2) {
+        return std::nullopt;
+    }
+    bool is_step = false;
+    for (u32 arg = 0; arg < 2; ++arg) {
+        const IR::Inst* shuffle = SkipBitCasts(op->Arg(arg));
+        const IR::Inst* other = SkipBitCasts(op->Arg(1 - arg));
+        is_step |= shuffle && other && shuffle->GetOpcode() == IR::Opcode::ShuffleXor &&
+                   SkipBitCasts(shuffle->Arg(0)) == other;
+    }
+    if (!is_step) {
+        return std::nullopt;
+    }
+    switch (op->GetOpcode()) {
+    case IR::Opcode::FPMin32:
+        return 0x7f800000u; // +inf
+    case IR::Opcode::FPMax32:
+        return 0xff800000u; // -inf
+    case IR::Opcode::FPMul32:
+        return 0x3f800000u; // 1.0
+    case IR::Opcode::UMin32:
+    case IR::Opcode::BitwiseAnd32:
+        return 0xffffffffu;
+    case IR::Opcode::SMin32:
+        return 0x7fffffffu;
+    case IR::Opcode::SMax32:
+        return 0x80000000u;
+    case IR::Opcode::IMul32:
+        return 1u;
+    case IR::Opcode::FPAdd32:
+    case IR::Opcode::IAdd32:
+    case IR::Opcode::UMax32:
+    case IR::Opcode::BitwiseOr32:
+    case IR::Opcode::BitwiseXor32:
+        return 0u;
+    default:
+        return std::nullopt;
+    }
+}
+
 void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info,
                            const Profile& profile) {
-    if (program.info.hw_stage != HwStage::Compute || profile.subgroup_size == 64) {
+    if (program.info.hw_stage != HwStage::Compute) {
+        return;
+    }
+    const bool bp06 = Common::Backports::On(Common::Backports::Id::MaximalReconvergence);
+    if (profile.subgroup_size == 64 && !bp06) {
         return;
     }
 
     const auto [size_x, size_y, size_z] = runtime_info.hw.cs.workgroup_size;
     const u32 num_threads = size_x * size_y * size_z;
     if (num_threads <= 32) {
+        if (!bp06) {
+            return;
+        }
+        // tlg: BP06 (SotC 8d84cf7). The whole workgroup fits in one host subgroup, but the guest
+        // code was written for a wave64 whose upper half is inactive. A read of a fixed lane in
+        // that upper half (the "readlane 32" that merges the two halves of a cross-lane
+        // reduction) indexes past the populated lanes, which is undefined for the broadcast -
+        // on 64-lane hosts too (lanes 32-63 have no invocation). When the value read is a
+        // reduction step the missing half is the reduction identity (folding it onto the lower
+        // half would count the lower lanes twice); other reads fold into the lower half.
+        const u32 host_lanes = std::min<u32>(profile.subgroup_size, 32);
+        if (host_lanes == 0) {
+            return;
+        }
+        for (IR::Block* block : program.blocks) {
+            for (IR::Inst& inst : block->Instructions()) {
+                if (inst.GetOpcode() != IR::Opcode::ReadLane || !inst.Arg(1).IsImmediate()) {
+                    continue;
+                }
+                const u32 lane = inst.Arg(1).U32();
+                if (lane < host_lanes) {
+                    continue;
+                }
+                Common::Backports::Hit(Common::Backports::Id::MaximalReconvergence);
+                if (const auto identity = ReductionIdentity(inst.Arg(0))) {
+                    inst.ReplaceUsesWithAndRemove(IR::Value{*identity});
+                } else {
+                    inst.SetArg(1, IR::Value{lane % host_lanes});
+                }
+            }
+        }
+        return;
+    }
+    if (profile.subgroup_size == 64) {
         return;
     }
 
