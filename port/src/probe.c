@@ -44,7 +44,9 @@ static int entered_game;
 static int gpu_enabled;
 static unsigned cpu_missing_sets; /* CPU_SET_* the host lacks; the guest code needs them rewritten */
 static IsaTable *isa_table; /* rewritten sites (--isa-rewrite); the fault handlers and the report read it */
+#ifndef _WIN32
 static uintptr_t guest_code_end; /* end of the image and its stub areas (emulation, red zone) */
+#endif
 static void isa_report_hook(void) { isa_rewrite_report(isa_table, stdout); }
 int vulkan_smoke(void);
 
@@ -1063,7 +1065,9 @@ int main(int argc, char **argv) {
     }
     image = allocate(round_page(size) + stub_area + red_zone_area);
     unsigned char *stubs = image + round_page(size);
+#ifndef _WIN32
     guest_code_end = (uintptr_t)image + round_page(size) + stub_area + red_zone_area;
+#endif
     if (fread(image, 1, size, f) != size || fgetc(f) != EOF) fail("incorrect memory image size");
     fclose(f);
     if (isa_table && isa_table_matches(isa_table, image, size)) {
