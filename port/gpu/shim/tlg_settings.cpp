@@ -78,6 +78,10 @@ void Set(Values& v, const std::string& key, const std::string& value) {
             return;
         }
     }
+    if (key == "key_map") {
+        v.key_map = value;
+        return;
+    }
     if (key == "upscaler") {
         for (int u = 0; u < UpscalerCount; ++u) {
             if (value == UpscalerName(u)) {
@@ -106,6 +110,18 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.debug_view = std::clamp(i, 0, DebugViewCount - 1);
     } else if (key == "show_fps") {
         v.show_fps = i != 0;
+    } else if (key == "mouse_enabled") {
+        v.mouse_enabled = i != 0;
+    } else if (key == "mouse_invert_y") {
+        v.mouse_invert_y = i != 0;
+    } else if (key == "mouse_sensitivity") {
+        v.mouse_sensitivity = Clamp(value.empty() ? 1.0f : f, 0.05f, 10.0f);
+    } else if (key == "mouse_smoothing") {
+        v.mouse_smoothing = Clamp(f, 0.0f, 0.95f);
+    } else if (key == "mouse_accel") {
+        v.mouse_accel = Clamp(f, 0.0f, 2.0f);
+    } else if (key == "mouse_deadzone") {
+        v.mouse_deadzone = Clamp(f, 0.0f, 0.5f);
     } else if (key == "display_mode") {
         v.display_mode = TlgGraphics::ParseDisplayMode(value);
     } else if (key == "vsync") {
@@ -171,7 +187,7 @@ Values& Get() {
 void Load() {
     auto& v = Get();
     if (FILE* file = std::fopen(Path(), "r")) {
-        char line[256];
+        char line[1024]; // key_map can be long
         while (std::fgets(line, sizeof(line), file)) {
             std::string text{line};
             text.erase(text.find_last_not_of(" \t\r\n") + 1);
@@ -199,7 +215,10 @@ void Load() {
         {"TLG_ASYNC_SHADERS", "async_shaders"},      {"TLG_DEFERRED_READBACK", "deferred_readback"},
         {"TLG_STALE_READBACK", "stale_readback"},     {"TLG_FSR1", "fsr1"},
         {"TLG_RCAS", "rcas"},                        {"TLG_FRAMES_AHEAD", "frames_queued"},
-        {"TLG_SHOW_FPS", "show_fps"},
+        {"TLG_SHOW_FPS", "show_fps"},             
+        {"TLG_MOUSE", "mouse_enabled"},           {"TLG_MOUSE_SENS", "mouse_sensitivity"},
+        {"TLG_MOUSE_INVERT_Y", "mouse_invert_y"}, {"TLG_MOUSE_SMOOTHING", "mouse_smoothing"},
+        {"TLG_MOUSE_ACCEL", "mouse_accel"},       {"TLG_MOUSE_DEADZONE", "mouse_deadzone"},
     };
     for (const auto& [env, key] : env_keys) {
         if (const char* value = std::getenv(env); value && value[0]) {
@@ -333,6 +352,11 @@ void Save() {
     for (int e = 0; e < kExtraPrefs; ++e) {
         if (const int p = v.extra_pref[e]; p >= 0) std::fprintf(file, "%s=%d\n", kExtraKeys[e], p);
     }
+    std::fprintf(file,
+                 "mouse_enabled=%d\nmouse_sensitivity=%.2f\nmouse_invert_y=%d\nmouse_smoothing=%.2f\n"
+                 "mouse_accel=%.2f\nmouse_deadzone=%.2f\nkey_map=%s\n",
+                 int(v.mouse_enabled.load()), v.mouse_sensitivity.load(), int(v.mouse_invert_y.load()),
+                 v.mouse_smoothing.load(), v.mouse_accel.load(), v.mouse_deadzone.load(), v.key_map.c_str());
     // Read by run.sh at start.
     std::fprintf(file, "live_resolution=%s\n", v.live_resolution < 0 ? "auto"
                                                   : v.live_resolution ? "1" : "0");
