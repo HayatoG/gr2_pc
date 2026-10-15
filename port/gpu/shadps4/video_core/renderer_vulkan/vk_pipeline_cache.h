@@ -190,6 +190,11 @@ private:
     void PublishShaders(bool wait = false);
     void PublishGraphics(bool wait = false);
     void FinishCompilations();
+    /// tlg: BP08, the driver's VkPipelineCache blob kept between sessions (see the .cpp).
+    void StartDriverCacheSaver();
+    void StopDriverCacheSaver();
+    bool SaveDriverCache();
+    bool SaveDriverCacheUnchecked();
     void SeedWorkerCaches();
     bool CheckCacheProfile();
     struct BackgroundWarmup;
@@ -230,6 +235,8 @@ private:
     std::unique_ptr<AsyncCompiler> compiler, capture_compiler;
     std::vector<vk::UniquePipelineCache> worker_pipeline_caches;
     bool worker_caches_seeded = false;
+    struct DriverCacheSaver;
+    DriverCacheSaver* driver_saver = nullptr; ///< tlg: BP08
     /// tlg: TLG_PARALLEL_WARMUP: WarmUp builds the cached pipelines on these threads.
     struct WarmupPool;
     WarmupPool* warmup_pool = nullptr;
