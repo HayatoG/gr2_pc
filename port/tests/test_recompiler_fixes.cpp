@@ -84,6 +84,36 @@ static BarrierResult RunBarrierPass(u32 threads, const char* spirv_path = nullpt
     return result;
 }
 
+// A 64-thread compute block with one ReadFirstLane (of a lane-varying value when `varying`) and
+// no ballot: lowered for wave64 (two workgroup barriers) only with TLG_RFL_ALL.
+static u32 ReadFirstLaneBarriers(bool varying) {
+    Info info{};
+    info.hw_stage = HwStage::Compute;
+    info.sw_stage = SwStage::Compute;
+    RuntimeInfo runtime{};
+    runtime.Initialize(HwStage::Compute, SwStage::Compute);
+    runtime.hw.cs.shared_memory_size = 0;
+    runtime.hw.cs.workgroup_size = {64, 1, 1};
+    Common::ObjectPool<IR::Inst> pool;
+    IR::Block block(pool);
+    IR::IREmitter ir(block);
+    const IR::U32 source = varying ? IR::U32{ir.SharedAtomicIAdd(ir.Imm32(0u), ir.Imm32(1u), false)}
+                                   : ir.GetAttributeU32(IR::Attribute::WorkgroupId, 0);
+    const IR::U32 first = ir.ReadFirstLane(source);
+    ir.WriteShared(32, first, ir.Imm32(0u));
+    ir.Epilogue();
+    IR::Program program(info);
+    program.blocks.push_back(&block);
+    program.post_order_blocks.push_back(&block);
+    program.syntax_list.push_back({.data = {.block = &block},
+                                   .type = IR::AbstractSyntaxNode::Type::Block});
+    program.syntax_list.push_back({.type = IR::AbstractSyntaxNode::Type::Return});
+    Profile profile{};
+    profile.subgroup_size = 32;
+    Optimization::LowerWave64BallotPass(program, runtime, profile);
+    return Count(block, IR::Opcode::Barrier);
+}
+
 static u32 WqmQuadBroadcasts(Gcn::OperandField dst, Gcn::OperandField src) {
     Info info{};
     info.hw_stage = HwStage::Fragment;
@@ -192,6 +222,11 @@ int main(int argc, char** argv) {
         info->length = 0;
         Check(AmdGpu::FindBinaryInfo(code) == nullptr, "binary info with no code is rejected");
     }
+
+    const bool rfl_all = Toggles::ReadFirstLaneAll();
+    Check(ReadFirstLaneBarriers(true) == (rfl_all ? 2u : 0u),
+          "ReadFirstLane of a lane-varying value is lowered for wave64 with TLG_RFL_ALL");
+    Check(ReadFirstLaneBarriers(false) == 0, "ReadFirstLane of a uniform value is left alone");
 
     Check(WqmQuadBroadcasts(Gcn::OperandField::VccLo, Gcn::OperandField::ExecLo) ==
               (wqm ? 4u : 0u),

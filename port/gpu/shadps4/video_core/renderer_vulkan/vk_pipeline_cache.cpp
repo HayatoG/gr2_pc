@@ -399,12 +399,13 @@ PipelineCache::PipelineCache(const Instance& instance_, Scheduler& scheduler_,
         .needs_clip_distance_emulation = instance.GetDriverID() == vk::DriverId::eNvidiaProprietary,
         .supports_shader_stencil_export = instance_.IsShaderStencilExportSupported(),
     };
-    // tlg: the recompiler switches (ISS_ names arrive as TLG_), one line each, for A/B reports.
+    // tlg: the recompiler switches (ISS_ names arrive as TLG_), one line each on stdout (the run
+    // log keeps it; LOG_INFO is filtered out there), for A/B reports.
     Shader::Toggles::LogStates([](const char* name, bool on, const char* what) {
-        LOG_INFO(Render_Vulkan, "tlg: shader switch {}={} ({})", name, on ? 1 : 0, what);
+        std::printf("GPU: shader switch %s=%d (%s)\n", name, on ? 1 : 0, what);
     });
-    LOG_INFO(Render_Vulkan, "tlg: host subgroup size {}, LDS barriers {}", profile.subgroup_size,
-             profile.needs_lds_barriers ? "on" : "off");
+    std::printf("GPU: host subgroup size %u, LDS barriers %s\n", profile.subgroup_size,
+                profile.needs_lds_barriers ? "on" : "off");
 
     auto [cache_result, cache] = instance.GetDevice().createPipelineCacheUnique({});
     ASSERT_MSG(cache_result == vk::Result::eSuccess, "Failed to create pipeline cache: {}",
