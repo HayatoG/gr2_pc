@@ -85,7 +85,7 @@ struct Program {
 struct DrawIndirectParams {
     u16 vertex_sgpr_offset;
     u32 instance_sgpr_offset;
-    bool is_indirect;
+    bool is_indirect = false; // tlg: BP07 and BP11 (the draw is an indirect one)
 };
 
 } // namespace Vulkan
@@ -107,6 +107,7 @@ struct PipelineSelection {
     GraphicsPipelineKey graphics_key{};
     bool motion = false;
     bool compilation_pending = false;
+    bool sync_compile = false; ///< tlg: BP07, shaders and pipeline of this draw compile now
     DrawIndirectParams draw_indirect_params{};
     struct PrepWorker* worker{}; ///< set: read-only selection for a draw-preparation worker
 };

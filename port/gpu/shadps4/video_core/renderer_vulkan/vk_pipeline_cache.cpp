@@ -25,6 +25,7 @@
 #include "shader_recompiler/recompiler_toggles.h"
 #include "shader_recompiler/runtime_info.h"
 #include "tlg_settings.h"
+#include "tlg_toggles.h"
 #include "video_core/amdgpu/liverpool.h"
 #include "video_core/cache_storage.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
@@ -756,6 +757,117 @@ const GraphicsPipeline* PipelineCache::TryPreparedPipeline(const PreparedDraw& p
     return it != graphics_pipelines.end() ? it->second.get() : nullptr;
 }
 
+
+// tlg: BP07 (bbport 10baf9d). The async path above skips every draw whose pipeline or shader is
+// still being compiled. With TLG_BP07=1 only draws of a pass drawn every frame in a busy frame,
+// with geometry of a few triangles or more and direct, may go without; the rest (small and
+// full-screen passes, indirect draws, frames with fewer than 300 draws, targets drawn to for
+// fewer than 8 frames in a row) compile now, shaders included, on the GPU thread.
+namespace {
+enum class Bp07Reason : u32 { Skippable, Small, Indirect, LightFrame, NoStreak, Count };
+
+struct Bp07State {
+    struct TargetStreak {
+        u64 last_frame = ~0ull;
+        u32 frames = 0;
+    };
+    std::unordered_map<u64, TargetStreak> streaks;
+    u64 frame_seen = ~0ull;
+    u64 draws_this_frame = 0, last_frame_draws = 0;
+    u64 last_target = 0, last_target_frame = ~0ull;
+    // Per reason: draws that compiled now / draws that went without (the async path skipped).
+    std::array<u64, size_t(Bp07Reason::Count)> sync{}, skipped{};
+    // The last pass of each kind, for the log: target address, indices.
+    std::array<u64, size_t(Bp07Reason::Count)> last_target_of{};
+    std::array<u32, size_t(Bp07Reason::Count)> last_indices_of{};
+    std::chrono::steady_clock::time_point last_log = std::chrono::steady_clock::now();
+    Bp07Reason current = Bp07Reason::Skippable;
+};
+Bp07State bp07; // GPU thread only (pipeline selection)
+
+u64 Bp07DrawTarget(const AmdGpu::Regs& regs) {
+    if (regs.color_control.mode != AmdGpu::ColorControl::OperationMode::Disable) {
+        for (u32 cb = 0; cb < AmdGpu::NUM_COLOR_BUFFERS; ++cb) {
+            if (regs.color_buffers[cb] && regs.color_target_mask.GetMask(cb)) {
+                return regs.color_buffers[cb].Address();
+            }
+        }
+    }
+    return regs.depth_buffer.DepthValid() ? regs.depth_buffer.DepthAddress() : 0;
+}
+
+/// Counts the draw and classifies it; the result stays in bp07.current.
+Bp07Reason Bp07Classify(const AmdGpu::Regs& regs, bool indirect) {
+    auto& st = bp07;
+    const u64 frame = TlgStats::gpu_frames.load(std::memory_order_relaxed);
+    if (frame != st.frame_seen) {
+        st.last_frame_draws = st.draws_this_frame;
+        st.draws_this_frame = 0;
+        st.frame_seen = frame;
+    }
+    ++st.draws_this_frame;
+    const u64 target = Bp07DrawTarget(regs);
+    if (target != 0 && !(target == st.last_target && frame == st.last_target_frame)) {
+        st.last_target = target;
+        st.last_target_frame = frame;
+        auto& streak = st.streaks[target];
+        if (streak.last_frame != frame) {
+            streak.frames = streak.last_frame + 1 == frame ? streak.frames + 1 : 1;
+            streak.last_frame = frame;
+        }
+    }
+    constexpr u64 BusyFrameDraws = 300;
+    constexpr u32 FullScreenIndices = 12;
+    constexpr u32 PerFrameStreak = 8;
+    Bp07Reason reason = Bp07Reason::Skippable;
+    if (st.last_frame_draws < BusyFrameDraws) {
+        reason = Bp07Reason::LightFrame;
+    } else if (indirect) {
+        reason = Bp07Reason::Indirect;
+    } else if (regs.num_indices <= FullScreenIndices) {
+        reason = Bp07Reason::Small;
+    } else {
+        const auto streak = st.streaks.find(target);
+        if (target == 0 || streak == st.streaks.end() || streak->second.frames < PerFrameStreak) {
+            reason = Bp07Reason::NoStreak;
+        }
+    }
+    const size_t i = size_t(reason);
+    st.last_target_of[i] = target;
+    st.last_indices_of[i] = indirect ? 0u : regs.num_indices;
+    st.current = reason;
+    return reason;
+}
+
+void Bp07Tally(bool compiled_now) {
+    auto& st = bp07;
+    const size_t i = size_t(st.current);
+    ++(compiled_now ? st.sync : st.skipped)[i];
+    if (compiled_now) {
+        Common::Backports::Hit(Common::Backports::Id::AsyncSkippable);
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - st.last_log < std::chrono::seconds(5)) {
+        return;
+    }
+    st.last_log = now;
+    static constexpr const char* names[] = {"skippable", "small", "indirect", "light-frame",
+                                            "no-streak"};
+    std::string line;
+    for (size_t r = 0; r < size_t(Bp07Reason::Count); ++r) {
+        if (st.sync[r] == 0 && st.skipped[r] == 0) {
+            continue;
+        }
+        line += fmt::format(" {}: {} compiled now, {} went without (last target {:#x}, {} indices);",
+                            names[r], st.sync[r], st.skipped[r], st.last_target_of[r],
+                            st.last_indices_of[r]);
+    }
+    if (!line.empty()) {
+        LOG_INFO(Render_Vulkan, "BP07 async draws (total):{}", line);
+    }
+}
+} // namespace
+
 const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectParams params,
                                                            const PreparedDraw* prepared) {
     SeedWorkerCaches();
@@ -763,6 +875,12 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     PublishGraphics();
     PumpWarmUp();
     used_prepared = nullptr;
+    // tlg: BP07, classified per draw (also those a prepared pipeline serves, for the frame's draws).
+    const bool bp07 = Common::Backports::On(Common::Backports::Id::AsyncSkippable);
+    sel.sync_compile = false;
+    if (bp07) {
+        sel.sync_compile = Bp07Classify(liverpool->regs, params.is_indirect) != Bp07Reason::Skippable;
+    }
     if (prepared) {
         if (const auto* pipeline = TryPreparedPipeline(*prepared)) {
             used_prepared = prepared;
@@ -773,6 +891,9 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
     if (!RefreshGraphicsKey(sel)) {
         if (sel.compilation_pending) {
             ++g_tlg_pending_draws;
+            if (bp07 && !sel.sync_compile) {
+                Bp07Tally(false); // a draw classified skippable
+            }
         }
         return nullptr;
     }
@@ -780,6 +901,23 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
         const auto found = graphics_pipelines.find(sel.graphics_key);
         if (found != graphics_pipelines.end()) {
             return found->second.get();
+        }
+        if (sel.sync_compile) {
+            // tlg: BP07: this draw does not go without. Wait for the worker building the
+            // pipeline, else fall through to the compile below on this thread.
+            Bp07Tally(true);
+            if (const auto pending = pending_graphics.find(sel.graphics_key);
+                pending != pending_graphics.end()) {
+                PhaseTimer waiting{g_tlg_compile_wait_ns};
+                pending.value()->job.Wait();
+                waiting.Stop();
+                PublishGraphics();
+                const auto ready = graphics_pipelines.find(sel.graphics_key);
+                if (ready != graphics_pipelines.end()) {
+                    return ready->second.get();
+                }
+            }
+            goto compile_now;
         }
         if (!pending_graphics.contains(sel.graphics_key) && compiler->HasCapacity()) {
             PhaseTimer capture{g_tlg_snapshot_ns};
@@ -812,8 +950,12 @@ const GraphicsPipeline* PipelineCache::GetGraphicsPipeline(const DrawIndirectPar
             }
         }
         ++g_tlg_pending_draws;
+        if (bp07) {
+            Bp07Tally(false);
+        }
         return nullptr;
     }
+compile_now:
     const auto [it, is_new] = graphics_pipelines.try_emplace(sel.graphics_key);
     if (is_new) {
         const auto pipeline_hash = std::hash<GraphicsPipelineKey>{}(sel.graphics_key);
@@ -1330,7 +1472,8 @@ PipelineCache::Result PipelineCache::GetProgram(PipelineSelection& sel, HwStage 
     auto it_pgm = program_cache.find(params.hash); // this thread is the only writer
     const bool compile_async = AsyncCompilation() && hw_stage != HwStage::Compute &&
                                !sel.regs->stage_enable.hs_en &&
-                               !EmulatorSettings.IsShaderCollect();
+                               !EmulatorSettings.IsShaderCollect() &&
+                               !sel.sync_compile; // tlg: BP07 draws compile their shaders now
     if (!compile_async && it_pgm != program_cache.end() && it_pgm->second->pending) {
         {
             PhaseTimer waiting{g_tlg_compile_wait_ns};
