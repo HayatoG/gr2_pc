@@ -9,6 +9,7 @@
 #include "common/bit_field.h"
 #include "video_core/amdgpu/pixel_format.h"
 #include "video_core/amdgpu/tiling.h"
+#include "video_core/amdgpu/tlg_block1d.h"
 
 namespace AmdGpu {
 
@@ -320,8 +321,12 @@ struct Image {
             return e && *e == '1';
         }();
         const auto type = GetType();
-        return enabled && (type == ImageType::Color1D || type == ImageType::Color1DArray) &&
-               IsBlockCoded(GetDataFmt());
+        const bool is_1d = type == ImageType::Color1D || type == ImageType::Color1DArray;
+        // tlg: BP09, every 1D image (not only block-coded ones) is 2D of height 1 on the host.
+        if (is_1d && All1DAs2D()) {
+            return true;
+        }
+        return enabled && is_1d && IsBlockCoded(GetDataFmt());
     }
 
     /// The view type of the host image: GetViewType, with block-compressed 1D as 2D.

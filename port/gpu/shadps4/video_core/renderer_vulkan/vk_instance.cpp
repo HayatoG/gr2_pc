@@ -798,6 +798,14 @@ void Instance::CollectDeviceParameters() {
     driver_id = driver.driverID;
     vendor_name = driver.driverName.data();
 
+    // tlg: BP09 (CTR d26bcb2): every 1D image as 2D of height 1; read once, before any image or
+    // shader exists, so the shaders and the images of a session agree.
+    const bool all_1d_as_2d = Common::Backports::On(Common::Backports::Id::Image1DAs2D);
+    AmdGpu::all_1d_as_2d.store(all_1d_as_2d, std::memory_order_relaxed);
+    if (all_1d_as_2d) {
+        std::printf("GPU: every 1D texture as a 2D image of height 1 (TLG_BP09=1)\n");
+    }
+
     const std::string model_name{GetModelName()};
     const std::string driver_version = GetDriverVersionName();
     const std::string driver_name = fmt::format("{} {}", vendor_name, driver_version);
