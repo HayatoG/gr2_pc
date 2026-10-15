@@ -7,6 +7,7 @@
 // With [dir], the multi-wave compute shader is written there as SPIR-V (for spirv-val).
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <span>
@@ -17,6 +18,7 @@
 #include "shader_recompiler/profile.h"
 #include "shader_recompiler/recompiler_toggles.h"
 #include "shader_recompiler/runtime_info.h"
+#include "video_core/amdgpu/regs_shader.h"
 
 using namespace Shader;
 
@@ -41,7 +43,8 @@ struct BarrierResult {
 };
 
 // One block: an LDS write, then a read of it (another lane's slot on the guest), then a write.
-static BarrierResult RunBarrierPass(u32 threads, const char* spirv_path = nullptr) {
+static BarrierResult RunBarrierPass(u32 threads, const char* spirv_path = nullptr,
+                                    u32 host_subgroup = 32) {
     Info info{};
     info.hw_stage = HwStage::Compute;
     info.sw_stage = SwStage::Compute;
@@ -64,7 +67,7 @@ static BarrierResult RunBarrierPass(u32 threads, const char* spirv_path = nullpt
     program.syntax_list.push_back({.type = IR::AbstractSyntaxNode::Type::Return});
     Profile profile{};
     profile.needs_lds_barriers = true;
-    profile.subgroup_size = 32;
+    profile.subgroup_size = host_subgroup;
     profile.supported_spirv = 0x00010600;
     profile.support_int64 = true;
     Optimization::SharedMemoryBarrierPass(program, runtime, profile);
@@ -116,6 +119,7 @@ int main(int argc, char** argv) {
     setenv("TLG_LDS_SMALL", "1", 0);
     setenv("TLG_LDS_MULTI", "1", 0);
     setenv("TLG_LDS_READLANE", "1", 0);
+    setenv("TLG_LANE_DIVERGENCE", "1", 0);
     const bool small = Toggles::SmallGroupLdsBarriers();
     const bool multi = Toggles::MultiWaveLdsBarriers();
     const bool wqm = Toggles::WholeQuadMode();
@@ -131,11 +135,63 @@ int main(int argc, char** argv) {
         std::filesystem::create_directories(argv[1]);
         spirv = (std::filesystem::path{argv[1]} / "lds-multi-wave.spv").string();
     }
+    // 32-wide host: every guest wave spans two host subgroups, so workgroup barriers.
     const BarrierResult several = RunBarrierPass(256, spirv.empty() ? nullptr : spirv.c_str());
-    Check(several.workgroup == 0 && several.subgroup == (multi ? 3u : 0u),
-          "256 threads: subgroup barriers with TLG_LDS_MULTI");
+    Check(several.workgroup == (multi ? 3u : 0u) && several.subgroup == 0,
+          "256 threads, 32-wide host: workgroup barriers with TLG_LDS_MULTI");
     const BarrierResult odd = RunBarrierPass(96);
-    Check(odd.workgroup == 0 && odd.subgroup == 0, "96 threads: no barriers");
+    Check(odd.workgroup == (multi ? 3u : 0u) && odd.subgroup == 0,
+          "96 threads, 32-wide host: workgroup barriers with TLG_LDS_MULTI (was none)");
+    const BarrierResult small48 = RunBarrierPass(48);
+    Check(small48.workgroup == (small ? 3u : 0u) && small48.subgroup == 0,
+          "48 threads: workgroup barriers with TLG_LDS_SMALL");
+    // 64-wide host: each guest wave (the partial last one too) is one host subgroup.
+    const BarrierResult wide = RunBarrierPass(256, nullptr, 64);
+    Check(wide.workgroup == 0 && wide.subgroup == (multi ? 3u : 0u),
+          "256 threads, 64-wide host: subgroup barriers with TLG_LDS_MULTI");
+    const BarrierResult wide_odd = RunBarrierPass(96, nullptr, 64);
+    Check(wide_odd.workgroup == 0 && wide_odd.subgroup == (multi ? 3u : 0u),
+          "96 threads, 64-wide host: subgroup barriers with TLG_LDS_MULTI");
+    const BarrierResult unknown = RunBarrierPass(192, nullptr, 0);
+    Check(unknown.workgroup == (multi ? 3u : 0u) && unknown.subgroup == 0,
+          "192 threads, unknown host subgroup: workgroup barriers");
+
+    {
+        Common::ObjectPool<IR::Inst> pool;
+        IR::Block block(pool);
+        IR::IREmitter ir(block);
+        const IR::U32 tid = ir.GetAttributeU32(IR::Attribute::LocalInvocationId, 0);
+        const IR::U32 index = ir.GetAttributeU32(IR::Attribute::LocalInvocationIndex);
+        const IR::U32 lt_mask = ir.GetAttributeU32(IR::Attribute::SubgroupLtMask, 0);
+        const IR::U32 wg = ir.GetAttributeU32(IR::Attribute::WorkgroupId, 0);
+        const IR::U32 old = ir.SharedAtomicIAdd(ir.Imm32(0u), ir.Imm32(1u), false);
+        const bool lane = Toggles::LaneDivergence();
+        Check(Optimization::IsLaneVaryingSource(*tid.Inst()), "LocalInvocationId varies per lane");
+        Check(Optimization::IsLaneVaryingSource(*index.Inst()) == lane,
+              "LocalInvocationIndex varies per lane with TLG_LANE_DIVERGENCE");
+        Check(Optimization::IsLaneVaryingSource(*lt_mask.Inst()) == lane,
+              "the mbcnt lane mask varies per lane with TLG_LANE_DIVERGENCE");
+        Check(Optimization::IsLaneVaryingSource(*old.Inst()) == lane,
+              "an atomic's old value varies per lane with TLG_LANE_DIVERGENCE");
+        Check(!Optimization::IsLaneVaryingSource(*wg.Inst()), "WorkgroupId is uniform");
+    }
+
+    {
+        // Binary info: found right after the code, rejected when its length runs past it.
+        alignas(256) static u32 code[64]{};
+        code[0] = 0xBF810000; // s_endpgm
+        auto* info = reinterpret_cast<AmdGpu::BinaryInfo*>(&code[8]);
+        std::memcpy(info->signature.data(), AmdGpu::BinaryInfo::signature_ref.data(),
+                    info->signature.size());
+        info->length = 8 * sizeof(u32);
+        info->shader_hash = 0x1234;
+        Check(AmdGpu::FindBinaryInfo(code) == info, "binary info right after the code is found");
+        info->length = 40 * sizeof(u32);
+        Check(AmdGpu::FindBinaryInfo(code) == nullptr,
+              "binary info whose code would run past it is rejected");
+        info->length = 0;
+        Check(AmdGpu::FindBinaryInfo(code) == nullptr, "binary info with no code is rejected");
+    }
 
     Check(WqmQuadBroadcasts(Gcn::OperandField::VccLo, Gcn::OperandField::ExecLo) ==
               (wqm ? 4u : 0u),
@@ -144,7 +200,8 @@ int main(int argc, char** argv) {
           "s_wqm_b64 exec, exec stays a no-op");
     Check(Toggles::ShaderBinarySalt() ==
               ((small ? 1u : 0u) | (multi ? 2u : 0u) | (Toggles::LdsUniformReadLane() ? 4u : 0u) |
-               (wqm ? 0u : 8u)),
+               (wqm ? 0u : 8u) | (Toggles::LaneDivergence() ? 16u : 0u) |
+               (Toggles::ReadFirstLaneAll() ? 32u : 0u)),
           "shader cache salt follows the switches");
     std::printf("%s\n", failures ? "recompiler fixes: FAILED" : "recompiler fixes: all ok");
     return failures ? 1 : 0;

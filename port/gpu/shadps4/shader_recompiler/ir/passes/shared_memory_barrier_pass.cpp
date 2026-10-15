@@ -6,6 +6,7 @@
 // commit 6f0b3e56 and its file at 70bb4385; the ReadLane part comes from Pink-shadPS4 by
 // luizgustavs). There they were SotC-only; here inFAMOUS turns them on (recompiler_toggles.h).
 
+#include <algorithm>
 #include <queue>
 #include <unordered_set>
 #include "shader_recompiler/ir/breadth_first_search.h"
@@ -32,7 +33,7 @@ static bool IsWriteShared(const IR::Inst& inst) {
            opcode == IR::Opcode::WriteSharedU64;
 }
 
-// Workgroup barrier, or a subgroup one for workgroups of several waves (see below).
+// Workgroup barrier, or a subgroup one when every guest wave fits in one host subgroup (below).
 static void EmitSync(IR::IREmitter& ir, bool subgroup) {
     if (subgroup) {
         ir.SubgroupBarrier();
@@ -84,11 +85,12 @@ struct DivergenceContext {
     // Blocks whose ReadLane with a constant lane is uniform in the workgroup: one wave (the
     // wave64 lowering exchanges it through LDS on 32-wide hardware).
     std::unordered_set<const IR::Block*> uniform_readlane_blocks;
-    // Synchronize host subgroups only (workgroups larger than one wave).
+    // Synchronize host subgroups only (every guest wave inside one host subgroup).
     bool subgroup{};
 };
 
-// A condition is divergent when it depends on LocalInvocationId. With uniform_readlane_blocks,
+// A condition is divergent when it depends on LocalInvocationId (or, with TLG_LANE_DIVERGENCE,
+// another lane-varying source: IsLaneVaryingSource). With uniform_readlane_blocks,
 // the search does not continue through uniform ReadLanes: a wave-wide reduction (a tile min/max
 // depth, for example) is the same in every invocation even though its inputs are not.
 // From Pink-shadPS4 (luizgustavs), lds_barrier_uniform_readlane, via SotC.
@@ -103,8 +105,7 @@ static bool SearchDivergence(const IR::U1& cond,
     while (!queue.empty()) {
         const IR::Inst* inst = queue.front();
         queue.pop();
-        if (inst->GetOpcode() == IR::Opcode::GetAttributeU32 &&
-            inst->Arg(0).Attribute() == IR::Attribute::LocalInvocationId) {
+        if (IsLaneVaryingSource(*inst)) {
             return true;
         }
         if (uniform_readlane_blocks && inst->GetOpcode() == IR::Opcode::ReadLane &&
@@ -179,12 +180,31 @@ static constexpr u32 GcnSubgroupSize = 64;
 //   threads) gave 0 instances to every GPU particle draw. They get workgroup barriers like a
 //   full wave (TLG_LDS_SMALL).
 // - Workgroups of several waves synchronize with s_barrier between waves, but the last steps of
-//   a reduction (s[tid] += s[tid + 16] for tid < 16, ...) run inside one wave and rely on its
-//   lanes executing in lockstep. A host subgroup of 32 does not guarantee that, and the compiler
-//   may reorder the loads of other lanes' values (SotC's auto-exposure averaged to 0.78 instead
-//   of 2.06). Those workgroups get subgroup barriers at the same points; a workgroup barrier
-//   there would also wait on the other waves, which the guest never does (TLG_LDS_MULTI).
-// tlg: on for inFAMOUS (flickering GPU particle smoke, iss_pc #7), off elsewhere for now.
+//   a reduction (s[tid] += s[tid + 32] for tid < 32, ...) run inside one wave and rely on its
+//   lanes executing in lockstep. A host subgroup does not guarantee that, and the compiler may
+//   reorder the loads of other lanes' values (SotC's auto-exposure averaged to 0.78 instead of
+//   2.06). Those workgroups get barriers at the same points (TLG_LDS_MULTI).
+// tlg: the scope comes from how the guest waves land on host subgroups. The workgroup is cut
+// into 64-lane guest waves, the last one partial when the size is not a multiple of 64 (96 =
+// 64 + 32). If every guest wave fits inside one host subgroup, the hazards stay inside one
+// subgroup and a subgroup barrier is enough (and does not wait on the other waves, which the
+// guest never does). Otherwise a guest wave spans several host subgroups: on 32-wide hardware
+// the step "tid < 32 reads s[tid + 32]" reads what the other host subgroup wrote, which only a
+// workgroup barrier orders. Any doubt (unknown subgroup size) means a workgroup barrier.
+static bool GuestWavesFitHostSubgroups(u32 threadgroup_size, u32 host_subgroup_size) {
+    if (host_subgroup_size == 0 || host_subgroup_size % GcnSubgroupSize != 0) {
+        // Narrower host subgroups (or an unknown size): only a workgroup that is itself no
+        // larger than one host subgroup avoids crossing them, and that is one subgroup anyway.
+        return false;
+    }
+    for (u32 start = 0; start < threadgroup_size; start += GcnSubgroupSize) {
+        const u32 last = std::min(start + GcnSubgroupSize, threadgroup_size) - 1;
+        if (start / host_subgroup_size != last / host_subgroup_size) {
+            return false;
+        }
+    }
+    return true;
+}
 
 void SharedMemoryBarrierPass(IR::Program& program, const RuntimeInfo& runtime_info,
                              const Profile& profile) {
@@ -196,19 +216,18 @@ void SharedMemoryBarrierPass(IR::Program& program, const RuntimeInfo& runtime_in
     const u32 threadgroup_size =
         cs_info.workgroup_size[0] * cs_info.workgroup_size[1] * cs_info.workgroup_size[2];
     // The compiler can only omit barriers when the local workgroup size is the same as the HW
-    // subgroup.
-    const bool multi_wave = threadgroup_size > GcnSubgroupSize &&
-                            threadgroup_size % GcnSubgroupSize == 0 &&
-                            Toggles::MultiWaveLdsBarriers();
+    // subgroup. tlg: every size other than 64 is now covered, 96 or 192 included (they used to
+    // get no barriers at all).
+    const bool multi_wave = threadgroup_size > GcnSubgroupSize && Toggles::MultiWaveLdsBarriers();
     const bool partial_wave = threadgroup_size < GcnSubgroupSize && Toggles::SmallGroupLdsBarriers();
-    if (shared_memory_size == 0 ||
+    if (shared_memory_size == 0 || threadgroup_size == 0 ||
         (threadgroup_size != GcnSubgroupSize && !multi_wave && !partial_wave) ||
         !profile.needs_lds_barriers) {
         return;
     }
     using Type = IR::AbstractSyntaxNode::Type;
     DivergenceContext ctx;
-    ctx.subgroup = multi_wave;
+    ctx.subgroup = multi_wave && GuestWavesFitHostSubgroups(threadgroup_size, profile.subgroup_size);
     // A ReadLane is uniform within one wave, not across the waves of a larger workgroup.
     if (!multi_wave && Toggles::LdsUniformReadLane()) {
         const auto blocks = FindWave64UniformBlocks(program);

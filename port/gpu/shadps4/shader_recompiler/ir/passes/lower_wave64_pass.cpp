@@ -10,8 +10,33 @@
 #include "shader_recompiler/ir/ir_emitter.h"
 #include "shader_recompiler/ir/program.h"
 #include "shader_recompiler/profile.h"
+#include "shader_recompiler/recompiler_toggles.h"
 
 namespace Shader::Optimization {
+
+static bool IsAtomicWithResult(IR::Opcode op) {
+    return (op >= IR::Opcode::SharedAtomicIAdd32 && op <= IR::Opcode::SharedAtomicCmpSwap64) ||
+           (op >= IR::Opcode::BufferAtomicIAdd32 && op <= IR::Opcode::BufferAtomicFCmpSwap32) ||
+           (op >= IR::Opcode::ImageAtomicIAdd32 && op <= IR::Opcode::ImageAtomicCmpSwap32);
+}
+
+bool IsLaneVaryingSource(const IR::Inst& inst) {
+    const IR::Opcode op = inst.GetOpcode();
+    if (op == IR::Opcode::GetAttributeU32 &&
+        inst.Arg(0).Attribute() == IR::Attribute::LocalInvocationId) {
+        return true;
+    }
+    if (!Toggles::LaneDivergence()) {
+        return false;
+    }
+    if (op == IR::Opcode::GetAttributeU32) {
+        const IR::Attribute attr = inst.Arg(0).Attribute();
+        return attr == IR::Attribute::LocalInvocationIndex ||
+               attr == IR::Attribute::SubgroupLtMask;
+    }
+    // Every lane of an atomic gets its own old value even at one address (the append counter).
+    return op == IR::Opcode::LaneId || IsAtomicWithResult(op);
+}
 
 static bool IsDivergentCondition(const IR::U1& condition) {
     if (condition.IsImmediate()) {
@@ -20,21 +45,55 @@ static bool IsDivergentCondition(const IR::U1& condition) {
     const IR::Inst* const condition_inst = condition.Inst();
     return IR::BreadthFirstSearch(condition_inst,
                                   [](const IR::Inst* inst) -> std::optional<bool> {
-                                      switch (inst->GetOpcode()) {
-                                      case IR::Opcode::LaneId:
+                                      if (inst->GetOpcode() == IR::Opcode::LaneId ||
+                                          IsLaneVaryingSource(*inst)) {
                                           return true;
-                                      case IR::Opcode::GetAttributeU32:
-                                          if (inst->Arg(0).Attribute() ==
-                                              IR::Attribute::LocalInvocationId) {
-                                              return true;
-                                          }
-                                          break;
-                                      default:
-                                          break;
                                       }
                                       return std::nullopt;
                                   })
         .value_or(false);
+}
+
+// tlg: true when a value is the same in every lane of the wave for sure: its inputs reach no
+// lane-varying source, no phi (its incoming edge can depend on the lane) and no LDS or memory
+// load (another lane may have written it). Such a ReadFirstLane needs no wave64 exchange.
+static bool IsProvablyWaveUniform(const IR::Value& value) {
+    if (value.IsImmediate()) {
+        return true;
+    }
+    return !IR::BreadthFirstSearch(static_cast<const IR::Inst*>(value.Inst()),
+                                   [](const IR::Inst* inst) -> std::optional<bool> {
+                                       switch (inst->GetOpcode()) {
+                                       case IR::Opcode::Phi:
+                                       case IR::Opcode::LaneId:
+                                       case IR::Opcode::LoadSharedU16:
+                                       case IR::Opcode::LoadSharedU32:
+                                       case IR::Opcode::LoadSharedU64:
+                                       case IR::Opcode::ImageRead:
+                                       case IR::Opcode::ReadLane:
+                                       case IR::Opcode::Shuffle:
+                                       case IR::Opcode::ShuffleXor:
+                                       case IR::Opcode::QuadBroadcast:
+                                           return true;
+                                       case IR::Opcode::GetAttributeU32:
+                                           // Workgroup id and the like are uniform; lane ids not.
+                                           return inst->Arg(0).Attribute() ==
+                                                      IR::Attribute::LocalInvocationId ||
+                                                  inst->Arg(0).Attribute() ==
+                                                      IR::Attribute::LocalInvocationIndex ||
+                                                  inst->Arg(0).Attribute() ==
+                                                      IR::Attribute::SubgroupLtMask;
+                                       default:
+                                           if (IsAtomicWithResult(inst->GetOpcode()) ||
+                                               (inst->GetOpcode() >= IR::Opcode::LoadBufferU8 &&
+                                                inst->GetOpcode() <=
+                                                    IR::Opcode::LoadBufferFormatF32)) {
+                                               return true;
+                                           }
+                                           return std::nullopt;
+                                       }
+                                   })
+                .value_or(false);
 }
 
 // tlg: loops whose exit depends on the lane are divergent; the others run the same iterations
@@ -183,7 +242,9 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
         for (IR::Inst& inst : block->Instructions()) {
             if (inst.GetOpcode() == IR::Opcode::ReadLane && inst.Arg(1).IsImmediate()) {
                 push_worklist(inst);
-            } else if (inst.GetOpcode() == IR::Opcode::ReadFirstLane && lane_math && is_uniform) {
+            } else if (inst.GetOpcode() == IR::Opcode::ReadFirstLane && is_uniform &&
+                       (lane_math ||
+                        (Toggles::ReadFirstLaneAll() && !IsProvablyWaveUniform(inst.Arg(0))))) {
                 // tlg: append pattern: the wave counts its items (ballot / prefix mask), one
                 // lane reserves space with an atomic and ReadFirstLane broadcasts the base.
                 // On 32-wide hardware the second half read its own first lane, which never

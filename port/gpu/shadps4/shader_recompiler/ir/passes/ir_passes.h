@@ -23,6 +23,10 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
                            const Profile& profile);
 /// Blocks outside divergent control flow (the ones whose wave64 lane operations are lowered).
 std::vector<IR::Block*> FindWave64UniformBlocks(const IR::Program& program);
+/// tlg: an instruction whose value differs between the lanes of one wave no matter its inputs
+/// (LocalInvocationId; with TLG_LANE_DIVERGENCE also LocalInvocationIndex, LaneId, the v_mbcnt
+/// lane mask and atomic results). Divergence searches stop there.
+bool IsLaneVaryingSource(const IR::Inst& inst);
 void LowerHardwareIntrinsics(IR::Program& program);
 void LowerPhisToRegsPass(IR::Program& program);
 void DeadCodeEliminationPass(IR::Program& program);
