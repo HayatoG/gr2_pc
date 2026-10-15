@@ -351,9 +351,10 @@ private:
         const VideoCore::Buffer* buffer;
         u64 offset;
         u32 size;
-        bool is_written;
+        vk::AccessFlags2 src_access; // tlg: BP10 (was is_written)
     };
-    boost::container::static_vector<BoundBuffer, Shader::NUM_BUFFERS> bound_buffers;
+    // tlg: BP10 vertex buffers can exceed Shader::NUM_BUFFERS, so no static_vector.
+    std::vector<BoundBuffer> bound_buffers;
 
     u32 set_write_index{};
     Pipeline::DescriptorWrites set_writes;
