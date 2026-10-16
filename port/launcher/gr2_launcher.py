@@ -74,9 +74,11 @@ TEXT = {
     'port_by': ('PC port by HayatoG', 'Port para PC por HayatoG'),
     'channel': ('YouTube channel: @hayatog-dev', 'Canal no YouTube: @hayatog-dev'),
     'discord': ('Discord community', 'Comunidade no Discord'),
+    'sponsor': ('♥ Sponsor on GitHub', '♥ Apoie no GitHub'),
 }
 CHANNEL_URL = 'https://www.youtube.com/@hayatog-dev'
 DISCORD_URL = 'https://discord.gg/UMkdMYZh9g'
+SPONSOR_URL = 'https://github.com/sponsors/HayatoG'
 GAME_LANGUAGE_NAMES = {'en': 'English', 'pt_BR': 'Português (Brasil)', 'es_LA': 'Español (Latinoamérica)',
                        'fr_CA': 'Français (Canada)'}
 UI_LANGUAGES = ['auto', 'pt_BR', 'en_US']
@@ -148,7 +150,7 @@ class Launcher:
         credits = ttk.Frame(header)
         credits.pack(side='right', anchor='ne')
         ttk.Label(credits, text=self.t('port_by'), foreground='#777').pack(anchor='e')
-        for key, url in (('channel', CHANNEL_URL), ('discord', DISCORD_URL)):
+        for key, url in (('channel', CHANNEL_URL), ('discord', DISCORD_URL), ('sponsor', SPONSOR_URL)):
             link = ttk.Label(credits, text=self.t(key), foreground='#2a6fdb', cursor='hand2',
                              font=('TkDefaultFont', 10, 'underline'))
             link.pack(anchor='e')
