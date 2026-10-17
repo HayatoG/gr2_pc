@@ -57,6 +57,19 @@ TEXT = {
                            'and try again).',
                            '{size} liberados, mas {count} arquivo(s) não puderam ser apagados (em uso? Feche o '
                            'jogo e tente de novo).'),
+    'mods': ('Mods / Cheats…', 'Mods / Cheats…'),
+    'mods_title': ('Mods / Cheats', 'Mods / Cheats'),
+    'mods_hint': ('Drop shadPS4/GoldHEN cheat XML files in the mods folder, then turn them on here. '
+                  'Nothing here changes the game until you enable it.',
+                  'Solte arquivos de cheat XML no formato shadPS4/GoldHEN na pasta de mods e ligue aqui. '
+                  'Nada muda no jogo até você ativar.'),
+    'mods_warning': ('A cheat can crash the game or behave oddly; if that happens, turn it off here.',
+                     'Um cheat pode travar o jogo ou se comportar de forma estranha; se isso acontecer, desligue aqui.'),
+    'mods_folder': ('Open mods folder', 'Abrir pasta de mods'),
+    'mods_refresh': ('Refresh list', 'Atualizar lista'),
+    'mods_empty': ('No cheat XML files found in the mods folder yet.',
+                   'Nenhum arquivo de cheat XML encontrado na pasta de mods ainda.'),
+    'close': ('Close', 'Fechar'),
     'quit': ('Quit', 'Sair'),
     'ready': ('Ready to play.', 'Pronto para jogar.'),
     'audio_native': ('Audio: native (console module found).', 'Áudio: nativo (módulo do console encontrado).'),
@@ -219,6 +232,7 @@ class Launcher:
         ttk.Button(buttons, text=self.t('saves'), command=lambda: self.open(tlg_run.USER_DIR / 'savedata')).pack(side='right')
         self.cache_button = ttk.Button(buttons, text=self.t('clear_cache'), command=self.clear_cache)
         self.cache_button.pack(side='right', padx=(0, 6))
+        ttk.Button(buttons, text=self.t('mods'), command=self.mods_dialog).pack(side='right', padx=(0, 6))
         self.refresh_status()
 
     def load_art(self):
@@ -263,6 +277,63 @@ class Launcher:
                 self.refresh_status()
         box.bind('<<ComboboxSelected>>', picked)
         return box
+
+    def mods_dialog(self):
+        """Mods/cheats (shadPS4/GoldHEN XML in tlg_run.mods_dir()); toggles write mods.json
+        through tlg_run.set_mod_enabled. Nothing here is on unless the player turns it on."""
+        if getattr(self, 'mods_window', None) and self.mods_window.winfo_exists():
+            self.mods_window.lift()
+            return
+        win = self.mods_window = tk.Toplevel(self.root)
+        win.title(self.t('mods_title'))
+        win.transient(self.root)
+        win.minsize(560, 360)
+        frame = ttk.Frame(win, padding=12)
+        frame.pack(fill='both', expand=True)
+        ttk.Label(frame, text=self.t('mods_hint'), wraplength=520, justify='left').pack(anchor='w')
+        ttk.Label(frame, text=self.t('mods_warning'), foreground='#a33', wraplength=520, justify='left').pack(
+            anchor='w', pady=(4, 8))
+
+        list_frame = ttk.Frame(frame)
+        list_frame.pack(fill='both', expand=True)
+        canvas = tk.Canvas(list_frame, highlightthickness=0)
+        scroll = ttk.Scrollbar(list_frame, orient='vertical', command=canvas.yview)
+        rows = ttk.Frame(canvas)
+        rows.bind('<Configure>', lambda _: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.create_window((0, 0), window=rows, anchor='nw')
+        canvas.configure(yscrollcommand=scroll.set)
+        canvas.pack(side='left', fill='both', expand=True)
+        scroll.pack(side='right', fill='y')
+
+        def toggle(key, var):
+            tlg_run.set_mod_enabled(key, var.get())
+
+        def populate():
+            for child in rows.winfo_children():
+                child.destroy()
+            try:
+                mods = tlg_run.list_mods(self.settings)
+            except Exception as error:  # a malformed XML file is reported, never crashes the launcher
+                mods = []
+                ttk.Label(rows, text=str(error), foreground='#a33').pack(anchor='w')
+            if not mods:
+                ttk.Label(rows, text=self.t('mods_empty'), foreground='#777').pack(anchor='w', pady=8)
+            for key, name, note, enabled in mods:
+                row = ttk.Frame(rows)
+                row.pack(fill='x', anchor='w', pady=2)
+                var = tk.BooleanVar(value=enabled)
+                ttk.Checkbutton(row, text=name or key, variable=var,
+                                command=lambda k=key, v=var: toggle(k, v)).pack(anchor='w')
+                if note:
+                    ttk.Label(row, text=note, foreground='#777', wraplength=480, justify='left').pack(
+                        anchor='w', padx=(22, 0))
+        populate()
+
+        bottom = ttk.Frame(frame)
+        bottom.pack(fill='x', pady=(10, 0))
+        ttk.Button(bottom, text=self.t('mods_folder'), command=lambda: self.open(tlg_run.mods_dir())).pack(side='left')
+        ttk.Button(bottom, text=self.t('mods_refresh'), command=populate).pack(side='left', padx=6)
+        ttk.Button(bottom, text=self.t('close'), command=win.destroy).pack(side='right')
 
     def check(self, parent, row, key):
         var = tk.BooleanVar(value=bool(self.settings[key]))
