@@ -151,6 +151,13 @@ file(GLOB_RECURSE RECOMPILER CONFIGURE_DEPENDS shadps4/shader_recompiler/*.cpp)
 file(GLOB_RECURSE TLG_SHADER_KEY_SOURCES shadps4/shader_recompiler/*.cpp shadps4/shader_recompiler/*.h)
 list(APPEND TLG_SHADER_KEY_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/shadps4/video_core/amdgpu/resource.h
+    # tlg: the 1D promotion predicates that resource.h and the SPIR-V image emitter read
+    # (IsBlock1D): their code changes which texels a shader samples, without changing the profile
+    # the cache compares.
+    ${CMAKE_CURRENT_SOURCE_DIR}/shadps4/video_core/amdgpu/tlg_block1d.h
+    # tlg: the graphics pipeline writes the host tessellation/discard SPIR-V into its serialized
+    # pipeline entry and decides when to emit it.
+    ${CMAKE_CURRENT_SOURCE_DIR}/shadps4/video_core/renderer_vulkan/vk_graphics_pipeline.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/shadps4/video_core/renderer_vulkan/vk_pipeline_cache.cpp)
 list(SORT TLG_SHADER_KEY_SOURCES)
 set(TLG_SHADER_KEY_DATA "")

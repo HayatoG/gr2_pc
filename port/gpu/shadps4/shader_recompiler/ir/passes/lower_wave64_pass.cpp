@@ -230,9 +230,79 @@ static std::optional<u32> ReductionIdentity(const IR::Value& value) {
     }
 }
 
+/// tlg: TLG_VERBOSE_LOG=1/2 (the launcher's detailed log), read once. The graphics lane-op census
+/// below walks the whole program, so it is skipped entirely unless the detailed log is on.
+static bool VerboseLog() {
+    static const bool on = [] {
+        const char* v = std::getenv("TLG_VERBOSE_LOG");
+        return v && std::atoi(v) > 0;
+    }();
+    return on;
+}
+
+/// tlg: lane operations of one program, counted per opcode. The compute path below uses it to name
+/// the wave64 candidates on 32-wide hardware; the graphics census prints what a VS/PS gives up when
+/// its lane operations run on a 32-lane wave (they are never lowered onto 64 lanes).
+struct LaneOpCensus {
+    static constexpr size_t NumOps = 12;
+    u32 counts[NumOps]{};
+    bool lane_math = false; ///< the shader numbers lanes (ballots, prefix masks)
+
+    std::string Describe() const {
+        static constexpr const char* names[NumOps]{"Ballot", "GetExec", "SetExec", "GroupAny",
+                                                   "ReadFirstLane", "ReadLaneImm", "ReadLaneVar",
+                                                   "WriteLane", "Shuffle", "ShuffleXor", "LaneId",
+                                                   "LtMask"};
+        std::string used;
+        for (size_t i = 0; i < NumOps; ++i) {
+            if (counts[i]) {
+                used += fmt::format("{}{} {}", used.empty() ? "" : ", ", names[i], counts[i]);
+            }
+        }
+        return used;
+    }
+};
+
+static LaneOpCensus CountLaneOps(IR::Program& program) {
+    LaneOpCensus census{};
+    for (IR::Block* block : program.blocks) {
+        for (IR::Inst& inst : block->Instructions()) {
+            switch (inst.GetOpcode()) {
+            case IR::Opcode::Ballot: ++census.counts[0]; break;
+            case IR::Opcode::GetExec: ++census.counts[1]; break;
+            case IR::Opcode::SetExec: ++census.counts[2]; break;
+            case IR::Opcode::GroupAny: ++census.counts[3]; break;
+            case IR::Opcode::ReadFirstLane: ++census.counts[4]; break;
+            case IR::Opcode::ReadLane: ++census.counts[inst.Arg(1).IsImmediate() ? 5 : 6]; break;
+            case IR::Opcode::WriteLane: ++census.counts[7]; break;
+            case IR::Opcode::Shuffle: ++census.counts[8]; break;
+            case IR::Opcode::ShuffleXor: ++census.counts[9]; break;
+            case IR::Opcode::LaneId: ++census.counts[10]; break;
+            case IR::Opcode::GetAttributeU32:
+                if (inst.Arg(0).Attribute() == IR::Attribute::SubgroupLtMask) ++census.counts[11];
+                break;
+            default: break;
+            }
+        }
+    }
+    census.lane_math = census.counts[0] || census.counts[11];
+    return census;
+}
+
 void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info,
                            const Profile& profile) {
     if (program.info.hw_stage != HwStage::Compute) {
+        // tlg: census of the graphics stages, which never get the wave64 lowering below (it is
+        // compute-only): their lane operations keep running on 32 lanes, so on a 64-lane host the
+        // other half of the wave is lost. TLG_VERBOSE_LOG only, no change to the graphics IR.
+        if (VerboseLog()) {
+            const std::string used = CountLaneOps(program).Describe();
+            if (!used.empty()) {
+                LOG_WARNING(Render_Recompiler,
+                            "tlg: {} shader {:#x} lane ops (not lowered for wave64): {}",
+                            program.info.hw_stage, program.info.pgm_hash, used);
+            }
+        }
         return;
     }
     const bool bp06 = Common::Backports::On(Common::Backports::Id::MaximalReconvergence);
@@ -282,42 +352,12 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
 
     // tlg: one line per compute shader wider than a 32-lane wave that uses lane operations:
     // the candidates when wave64 code misbehaves on 32-wide hardware (flickering lights).
-    bool lane_math = false; // the shader numbers lanes (ballots, prefix masks)
-    {
-        u32 counts[12]{};
-        static constexpr const char* names[12]{"Ballot", "GetExec", "SetExec", "GroupAny",
-                                               "ReadFirstLane", "ReadLaneImm", "ReadLaneVar",
-                                               "WriteLane", "Shuffle", "ShuffleXor", "LaneId",
-                                               "LtMask"};
-        for (IR::Block* block : program.blocks) {
-            for (IR::Inst& inst : block->Instructions()) {
-                switch (inst.GetOpcode()) {
-                case IR::Opcode::Ballot: ++counts[0]; break;
-                case IR::Opcode::GetExec: ++counts[1]; break;
-                case IR::Opcode::SetExec: ++counts[2]; break;
-                case IR::Opcode::GroupAny: ++counts[3]; break;
-                case IR::Opcode::ReadFirstLane: ++counts[4]; break;
-                case IR::Opcode::ReadLane: ++counts[inst.Arg(1).IsImmediate() ? 5 : 6]; break;
-                case IR::Opcode::WriteLane: ++counts[7]; break;
-                case IR::Opcode::Shuffle: ++counts[8]; break;
-                case IR::Opcode::ShuffleXor: ++counts[9]; break;
-                case IR::Opcode::LaneId: ++counts[10]; break;
-                case IR::Opcode::GetAttributeU32:
-                    if (inst.Arg(0).Attribute() == IR::Attribute::SubgroupLtMask) ++counts[11];
-                    break;
-                default: break;
-                }
-            }
-        }
-        lane_math = counts[0] || counts[11];
-        std::string used;
-        for (int i = 0; i < 12; ++i) {
-            if (counts[i]) used += fmt::format("{}{} {}", used.empty() ? "" : ", ", names[i], counts[i]);
-        }
-        if (!used.empty()) {
-            LOG_WARNING(Render_Recompiler, "tlg: wave64 compute shader {:#x} ({} threads, {}x{}x{}): {}",
-                        program.info.pgm_hash, num_threads, size_x, size_y, size_z, used);
-        }
+    const auto census = CountLaneOps(program);
+    const bool lane_math = census.lane_math;
+    const std::string lane_ops = census.Describe();
+    if (!lane_ops.empty()) {
+        LOG_WARNING(Render_Recompiler, "tlg: wave64 compute shader {:#x} ({} threads, {}x{}x{}): {}",
+                    program.info.pgm_hash, num_threads, size_x, size_y, size_z, lane_ops);
     }
 
     std::vector<IR::Inst*> worklist;

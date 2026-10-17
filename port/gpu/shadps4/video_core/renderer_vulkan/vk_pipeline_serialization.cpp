@@ -310,6 +310,12 @@ vk::ResultValue<vk::UniquePipeline> CreateCachedGraphicsPipeline(
     binary_key_ns += ElapsedNs(key_started);
     if (key_result != vk::Result::eSuccess ||
         !ValidKey(global) || !ValidKey(BinaryKey(pipeline_key))) {
+        // tlg: a binary that is skipped used to be counted only: the call name and the VkResult are
+        // what a crash right after it (NVIDIA 595, ISS_PIPELINE_BINARIES) needs (TLG_GPU_LOG=info).
+        LOG_INFO(Render_Vulkan,
+                 "tlg: pipeline binary skipped (vkGetPipelineKeyKHR {}, global key {}, pipeline "
+                 "key {})",
+                 vk::to_string(key_result), global.size(), pipeline_key.keySize);
         ++binary_errors;
         ++binary_misses;
         return create(cache, info, false);
@@ -378,11 +384,23 @@ vk::ResultValue<vk::UniquePipeline> CreateCachedGraphicsPipeline(
                     ++binary_hits;
                     return result;
                 }
+                // tlg: the created pipeline was rejected with binaries (NVIDIA 595 crashed right
+                // after this): name the call and its VkResult (TLG_GPU_LOG=info).
+                LOG_INFO(Render_Vulkan,
+                         "tlg: pipeline binary restore rejected ({} binaries, createGraphicsPipeline "
+                         "result {})",
+                         handles.size(), vk::to_string(result.result));
+            } else {
+                LOG_INFO(Render_Vulkan,
+                         "tlg: pipeline binary restore failed (vkCreatePipelineBinariesKHR {})",
+                         vk::to_string(static_cast<vk::Result>(handles_result)));
             }
             ++binary_rejected;
             destroy();
         }
-    } catch (const std::exception&) {
+    } catch (const std::exception& e) {
+        // tlg: name what failed on the restore path (TLG_GPU_LOG=info).
+        LOG_INFO(Render_Vulkan, "tlg: pipeline binary restore failed: {}", e.what());
         ++binary_errors;
         destroy();
     }
@@ -391,6 +409,8 @@ vk::ResultValue<vk::UniquePipeline> CreateCachedGraphicsPipeline(
                   vk::PipelineCreateFlagBits2::eCaptureDataKHR;
     auto result = create(nullptr, captured_info, false);
     if (result.result != vk::Result::eSuccess) {
+        LOG_INFO(Render_Vulkan, "tlg: pipeline binary capture creation failed ({})",
+                 vk::to_string(result.result));
         ++binary_errors;
         return create(cache, info, false);
     }
@@ -407,16 +427,27 @@ vk::ResultValue<vk::UniquePipeline> CreateCachedGraphicsPipeline(
             VK_STRUCTURE_TYPE_PIPELINE_BINARY_CREATE_INFO_KHR};
         binary_info.pipeline = *result.value;
         VkPipelineBinaryHandlesInfoKHR output{VK_STRUCTURE_TYPE_PIPELINE_BINARY_HANDLES_INFO_KHR};
-        if (dispatch.vkCreatePipelineBinariesKHR(device, &binary_info, nullptr, &output) !=
-                VK_SUCCESS ||
-            !output.pipelineBinaryCount || output.pipelineBinaryCount > MaxBinaries) {
+        const auto count_result =
+            dispatch.vkCreatePipelineBinariesKHR(device, &binary_info, nullptr, &output);
+        if (count_result != VK_SUCCESS || !output.pipelineBinaryCount ||
+            output.pipelineBinaryCount > MaxBinaries) {
+            // tlg: the VkResult and the call name of a failed capture (TLG_GPU_LOG=info).
+            LOG_INFO(Render_Vulkan,
+                     "tlg: pipeline binary capture failed (vkCreatePipelineBinariesKHR count {}, "
+                     "binaries {})",
+                     vk::to_string(static_cast<vk::Result>(count_result)),
+                     output.pipelineBinaryCount);
             ++binary_errors;
             return result;
         }
         handles.resize(output.pipelineBinaryCount);
         output.pPipelineBinaries = handles.data();
-        if (dispatch.vkCreatePipelineBinariesKHR(device, &binary_info, nullptr, &output) !=
-            VK_SUCCESS) {
+        const auto handles_result =
+            dispatch.vkCreatePipelineBinariesKHR(device, &binary_info, nullptr, &output);
+        if (handles_result != VK_SUCCESS) {
+            LOG_INFO(Render_Vulkan,
+                     "tlg: pipeline binary capture failed (vkCreatePipelineBinariesKHR {})",
+                     vk::to_string(static_cast<vk::Result>(handles_result)));
             ++binary_errors;
             return result;
         }
@@ -428,18 +459,28 @@ vk::ResultValue<vk::UniquePipeline> CreateCachedGraphicsPipeline(
             vk::PipelineBinaryKeyKHR binary_key;
             size_t size = 0;
             auto* raw_key = reinterpret_cast<VkPipelineBinaryKeyKHR*>(&binary_key);
-            if (dispatch.vkGetPipelineBinaryDataKHR(device, &data_info, raw_key, &size, nullptr) !=
-                    VK_SUCCESS ||
-                !size || size > MaxFileSize || total_size + size > MaxFileSize ||
-                !ValidKey(BinaryKey(binary_key))) {
+            const auto data_result =
+                dispatch.vkGetPipelineBinaryDataKHR(device, &data_info, raw_key, &size, nullptr);
+            if (data_result != VK_SUCCESS || !size || size > MaxFileSize ||
+                total_size + size > MaxFileSize || !ValidKey(BinaryKey(binary_key))) {
+                LOG_INFO(Render_Vulkan,
+                         "tlg: pipeline binary capture failed (vkGetPipelineBinaryDataKHR {}, "
+                         "size {})",
+                         vk::to_string(static_cast<vk::Result>(data_result)), size);
                 ++binary_errors;
                 return result;
             }
             total_size += size;
             Binary binary{BinaryKey(binary_key), std::vector<u8>(size)};
-            if (dispatch.vkGetPipelineBinaryDataKHR(device, &data_info, raw_key, &size,
-                                                    binary.data.data()) != VK_SUCCESS ||
-                size > binary.data.size()) {
+            const auto copy_result =
+                dispatch.vkGetPipelineBinaryDataKHR(device, &data_info, raw_key, &size,
+                                                    binary.data.data());
+            if (copy_result != VK_SUCCESS || size > binary.data.size()) {
+                LOG_INFO(Render_Vulkan,
+                         "tlg: pipeline binary capture failed (vkGetPipelineBinaryDataKHR {}, size "
+                         "{}/{})",
+                         vk::to_string(static_cast<vk::Result>(copy_result)), size,
+                         binary.data.size());
                 ++binary_errors;
                 return result;
             }
