@@ -26,8 +26,12 @@ import shader_cache
 FROZEN = bool(getattr(sys, 'frozen', False))
 PORT_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent.parent
 REPO_DIR = PORT_DIR.parent
+sys.path.insert(0, str(PORT_DIR / 'scripts'))
+import mod_patches  # noqa: E402
 OUT_DIR = PORT_DIR / 'out'
 USER_DIR = PORT_DIR / 'user'
+MODS_DIR = USER_DIR / 'mods'          # shadPS4/GoldHEN cheat XML files the player drops in
+MODS_CONFIG = USER_DIR / 'mods.json'  # {"enabled": [...], "disabled": [...]}
 LOG_DIR = OUT_DIR / 'logs'
 PROBE = OUT_DIR / ('tlg-probe.exe' if os.name == 'nt' else 'tlg-probe')
 KEEP_LOGS = 30
@@ -192,8 +196,44 @@ def run_script(argv):
     return 0
 
 
+def mods_dir():
+    """TLG_MODS_DIR, else USER_DIR/mods (created empty on first use so the player sees where
+    to drop shadPS4/GoldHEN cheat XML files)."""
+    directory = Path(os.environ.get('TLG_MODS_DIR') or MODS_DIR)
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def mods_config():
+    return Path(os.environ.get('TLG_MODS_CONFIG') or MODS_CONFIG)
+
+
+def list_mods(settings):
+    """[(key, name, note, enabled)] for the Mods tab: every shadPS4/GoldHEN cheat XML found in
+    the mods folder for this game's version, with its current enabled state."""
+    from gr2_patches import TITLE_IDS
+    app_version = mod_patches.game_app_version(settings['game_dir'])
+    found = mod_patches.external_patches(mods_dir(), app_version, TITLE_IDS)
+    selected = {key for key, _, _ in mod_patches.external_selection(found, mods_config())}
+    return [(key, meta.get('Name'), meta.get('Note', ''), key in selected) for key, _, meta in found]
+
+
+def set_mod_enabled(key, enabled):
+    """Updates mods.json: moves key into enabled/disabled, out of the other list."""
+    path = mods_config()
+    try:
+        data = json.loads(path.read_text()) if path.is_file() else {}
+    except (OSError, ValueError):
+        data = {}
+    on, off = set(data.get('enabled', [])), set(data.get('disabled', []))
+    (on if enabled else off).add(key)
+    (off if enabled else on).discard(key)
+    path.write_text(json.dumps({'enabled': sorted(on), 'disabled': sorted(off)}, indent=2))
+
+
 def prepare(settings, log=print):
-    """Builds out/boot-linked.bin and out/content.bin; returns the module list that was linked."""
+    """Builds out/boot-linked.bin, out/content.bin and out/patches.bin (mods); returns the
+    module list that was linked."""
     game = settings['game_dir']
     scripts = PORT_DIR / 'scripts'
     modules = ['libc.prx', 'libSceFios2.prx', 'libSceJobManager.prx',
@@ -205,6 +245,8 @@ def prepare(settings, log=print):
         [*python_command(scripts / 'prepare.py'), game, '--out', str(OUT_DIR)],
         [*python_command(scripts / 'link_modules.py'), game, '--out', str(OUT_DIR), '--modules', *modules],
         [*python_command(scripts / 'content_profile.py'), game, '--out', str(OUT_DIR)],
+        [*python_command(scripts / 'gr2_patches.py'), game, '--out', str(OUT_DIR),
+         '--mods-dir', str(mods_dir()), '--mods-config', str(mods_config())],
     ]
     for step in steps:
         result = subprocess.run(step, cwd=str(scripts), capture_output=True, text=True,
@@ -375,7 +417,7 @@ def launch(settings, seconds=0, extra_env=None):
     log = new_log()
     cmd = [str(PROBE), str(OUT_DIR / 'boot-linked.bin'), '--app0', settings['game_dir'],
            '--user', str(USER_DIR), '--content-profile', str(OUT_DIR / 'content.bin'),
-           '--timeout', str(int(seconds))]
+           '--patches', str(OUT_DIR / 'patches.bin'), '--timeout', str(int(seconds))]
     if ISA_TABLE.is_file():
         cmd += ['--isa-rewrite', str(ISA_TABLE)]
     process = subprocess.Popen(cmd, cwd=str(USER_DIR), env=build_env(settings, extra_env),
