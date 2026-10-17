@@ -17,6 +17,7 @@ import datetime
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -38,6 +39,104 @@ KEEP_LOGS = 30
 
 # Game language: PS4 system language ids the game ships voice/text archives for.
 GAME_LANGUAGES = {'en': 1, 'pt_BR': 17, 'es_LA': 20, 'fr_CA': 22}
+_LANGUAGE_PREFIX = {'pt': 'pt_BR', 'es': 'es_LA', 'fr': 'fr_CA'}
+
+
+def system_game_language(environ=None):
+    """The game language that follows the system one: LC_ALL, LC_MESSAGES, LANG, then the Python
+    locale and, on Windows, the user's default locale name. pt (also pt_PT) is pt_BR, es is
+    es_LA, fr is fr_CA, anything else is English (the Qt launcher, ported from infamous_pc)."""
+    environ = os.environ if environ is None else environ
+    code = ''
+    for name in ('LC_ALL', 'LC_MESSAGES', 'LANG'):
+        if environ.get(name):
+            code = environ[name]
+            break
+    if not code:
+        try:
+            import locale
+            code = locale.getlocale()[0] or ''
+        except Exception:
+            code = ''
+    if not code and os.name == 'nt':
+        try:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(85)
+            if ctypes.windll.kernel32.GetUserDefaultLocaleName(buf, 85):
+                code = buf.value
+        except Exception:
+            code = ''
+    return _LANGUAGE_PREFIX.get(re.split(r'[_\-.@]', code.strip().lower())[0], 'en')
+
+
+def resolve_game_language(settings, environ=None):
+    """settings['game_language'] when it is one of GAME_LANGUAGES; 'auto' (or anything unknown)
+    follows the system."""
+    choice = settings.get('game_language', 'auto')
+    return choice if choice in GAME_LANGUAGES else system_game_language(environ)
+
+
+def user_dir():
+    """The folder of saves, tlg.ini and GPU caches. Always call this instead of caching it (the
+    Qt launcher calls it the same way infamous_pc's does); it is USER_DIR, the same fixed folder
+    the rest of this module and the Tk launcher already use. GR2_USER_DIR / a reinstall-surviving
+    pointer file (userdata.py, copied from infamous_pc but not yet wired in) is a follow-up: wiring
+    it here would also need every existing USER_DIR reference in this file updated together, to
+    avoid the Tk and Qt launchers disagreeing on where saves live."""
+    return USER_DIR
+
+
+class GameError(RuntimeError):
+    """A problem with the player's game files (TEXT key + detail); str() holds both languages."""
+
+    def __init__(self, key, detail):
+        super().__init__(message(key, detail=detail))
+        self.key, self.detail = key, detail
+
+
+TEXT = {}
+
+
+def message(key, portuguese=None, **fmt):
+    en, pt = TEXT.get(key, ('{detail}', '{detail}'))
+    return (pt if portuguese else en).format(**fmt)
+
+
+def read_ini(path):
+    """The keys of tlg.ini (name -> text); {} when it does not exist."""
+    values = {}
+    try:
+        lines = Path(path).read_text(encoding='utf-8').splitlines()
+    except OSError:
+        return values
+    for line in lines:
+        if '=' in line and not line.lstrip().startswith('#'):
+            key, _, value = line.partition('=')
+            values[key.strip()] = value.strip()
+    return values
+
+
+def blocking(problems):
+    """check_game() problems that stop the game from starting (none of GR2's are warning-only yet)."""
+    return list(problems)
+
+
+def experimental_states(settings):
+    """The player's choices of the launcher's "Experimental fixes" window (tlg.ini + settings).
+    Always empty for now: no GR2-specific fixes/backports are cataloged yet (backports_table.py)."""
+    import backports_table
+    return backports_table.read_states(read_ini(user_dir() / 'tlg.ini'), settings)
+
+
+def save_experimental(settings, states):
+    """Writes the choices of the "Experimental fixes" window: tlg.ini keys (the game's own file)
+    and the switches kept in settings.json. Shared by the Tk and Qt launchers."""
+    import backports_table
+    user_dir().mkdir(parents=True, exist_ok=True)
+    backports_table.write_ini(user_dir() / 'tlg.ini', backports_table.ini_updates(states))
+    for item in backports_table.ITEMS:
+        if item.store == 'launcher':
+            settings[item.key] = backports_table.effective(item, states) != '0'
 
 # TLG defaults (see README "Opções" and the reasons in each comment).
 DEFAULT_ENV = {
@@ -65,6 +164,7 @@ DEFAULT_SETTINGS = {
     'vsync': True,
     'vram_budget_mb': 5600,
     'native_audio': True,
+    'stick_deadzone': 10,           # percent; runtime_pad.c GR2_STICK_DEADZONE (Qt Controls page)
 }
 
 
@@ -373,6 +473,10 @@ def build_env(settings, extra=None):
         env.setdefault('TLG_WINDOW_ICON', str(icon))
     if settings.get('gs_outline_off', True):
         env.setdefault('TLG_SKIP_ADJACENCY', '1')
+    env['GR2_STICK_DEADZONE'] = os.environ.get('GR2_STICK_DEADZONE', f"{int(settings.get('stick_deadzone', 10)) / 100:.2f}")
+    import padsettings
+    for name, value in padsettings.environment(settings).items():   # mouse/touchpad mode, GR2_KEY_MAP
+        env.setdefault(name, value)
     restart = f'"{sys.executable}" --play' if FROZEN else f'"{sys.executable}" "{Path(__file__).resolve()}"'
     env.setdefault('TLG_RESTART_COMMAND', restart)
     # Linux package: the libraries built with the port (SDL3, FFmpeg, ...) are in out/lib.

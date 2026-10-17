@@ -1,0 +1,4 @@
+{
+ "_comment": "Known problems by hardware, shown on the Support screen (local table, nothing is fetched). match: every condition named must hold. os: windows|linux. vendor: NVIDIA|AMD|Intel. gpu: regexes on the Vulkan device name. driver: regex on 'driverName driverInfo'. vram_gb_max / vram_gb_min: device-local memory in GiB (discrete GPUs). issues: GitHub issue numbers.",
+ "issues": []
+}
