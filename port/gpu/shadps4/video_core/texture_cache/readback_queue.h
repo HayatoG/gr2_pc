@@ -68,6 +68,7 @@ public:
         }
     }
     std::uint64_t Bytes() const { return bytes; }
+    bool Empty() const { return entries.empty(); }
 
 private:
     static bool OverlapsPage(const Entry& entry, std::uint64_t address, std::uint64_t size) {

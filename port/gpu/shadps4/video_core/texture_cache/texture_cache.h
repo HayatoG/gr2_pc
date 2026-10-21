@@ -429,6 +429,9 @@ private:
     Common::SlotVector<ImageView> slot_image_views;
     tsl::robin_map<u64, Sampler> samplers;
     std::unordered_set<ImageId> download_images;
+    /// tlg: !download_images.empty(), stored under download_images_mutex. ProcessDownloadImages
+    /// runs at every fence and skips both locks when nothing is queued or pending.
+    std::atomic<bool> has_download_images{false};
     u64 total_used_memory = 0;
     u64 gc_evictions = 0, gc_downloads = 0; ///< tlg: pressure report
     std::chrono::steady_clock::time_point gc_report_time{};
@@ -445,6 +448,12 @@ private:
     const bool readback_linear_images;
     const bool deferred_readbacks = [] {
         const char* value = std::getenv("TLG_DEFERRED_READBACK");
+        return value && value[0] == '1';
+    }();
+    /// tlg: TLG_GC_BATCH_DOWNLOAD=1: the collector records the copies of all GPU-written images
+    /// it evicts and waits for the GPU once, instead of once per image (GarbageCollectImages).
+    const bool gc_batch_downloads = [] {
+        const char* value = std::getenv("TLG_GC_BATCH_DOWNLOAD");
         return value && value[0] == '1';
     }();
     /// tlg: TLG_STALE_READBACK=1 (needs deferred readbacks). A pending copy only blocks CPU
