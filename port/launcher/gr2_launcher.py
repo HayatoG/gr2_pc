@@ -18,10 +18,14 @@ from tkinter import filedialog, messagebox, ttk
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gr2_run as tlg_run  # noqa: E402  (same API as the TLG core)
+import steam_shortcut  # noqa: E402
 
 TEXT = {
     'title': ('Gravity Rush 2 — PC', 'Gravity Rush 2 — PC'),
     'gs_outline_off': ('Turn off the geometry-shader outline (fixes black streaks)', 'Desligar o contorno do geometry shader (corrige as linhas pretas)'),
+    'dlss': ('DLSS (experimental; F7 cycles the motion mode)', 'DLSS (experimental; F7 alterna o modo de movimento)'),
+    'freeze_workaround': ('Avoid rare freezes (slower first-time shader loading)', 'Evitar travamentos raros (shaders carregam mais devagar na primeira vez)'),
+    'ps4_pro': ('PS4 Pro mode (the game\'s own higher-resolution rendering; experimental)', 'Modo PS4 Pro (a renderização em resolução maior do próprio jogo; experimental)'),
     'game': ('Game', 'Jogo'),
     'game_dir': ('Game folder', 'Pasta do jogo'),
     'system_lib_dir': ('Console system modules', 'Módulos do sistema do console'),
@@ -68,6 +72,20 @@ TEXT = {
     'mods_refresh': ('Refresh list', 'Atualizar lista'),
     'mods_empty': ('No cheat XML files found in the mods folder yet.',
                    'Nenhum arquivo de cheat XML encontrado na pasta de mods ainda.'),
+    'steam': ('Add to Steam', 'Adicionar ao Steam'),
+    'steam_missing': ('Steam was not found on this PC.', 'O Steam não foi encontrado neste PC.'),
+    'steam_no_play': ('"Play Gravity Rush 2.exe" is missing next to the launcher.',
+                      'O "Play Gravity Rush 2.exe" não está ao lado do launcher.'),
+    'steam_close_ask': ('Steam has to close for a moment to add the game, then it opens again. Close Steam now?',
+                        'O Steam precisa fechar por um momento para adicionar o jogo e depois abre de novo. '
+                        'Fechar o Steam agora?'),
+    'steam_closing': ('Closing Steam…', 'Fechando o Steam…'),
+    'steam_close_failed': ('Steam did not close. Exit it from the tray icon and try again.',
+                           'O Steam não fechou. Saia pelo ícone da bandeja e tente de novo.'),
+    'steam_done': ('Gravity Rush 2 is in your Steam library (non-Steam games), with its artwork. '
+                   'It starts the game with the settings saved here.',
+                   'Gravity Rush 2 está na sua biblioteca do Steam (jogos não-Steam), com a arte. '
+                   'Ele inicia o jogo com as configurações salvas aqui.'),
     'close': ('Close', 'Fechar'),
     'quit': ('Quit', 'Sair'),
     'ready': ('Ready to play.', 'Pronto para jogar.'),
@@ -203,6 +221,9 @@ class Launcher:
         self.check(video, 1, 'vsync')
         self.check(video, 2, 'show_fps')
         self.check(video, 5, 'gs_outline_off')
+        self.check(video, 6, 'ps4_pro')
+        self.check(video, 7, 'freeze_workaround')
+        self.check(video, 8, 'dlss')
         ttk.Label(video, text=self.t('vram'), wraplength=220).grid(row=3, column=0, sticky='w', pady=(6, 0))
         vram = tk.IntVar(value=int(self.settings['vram_budget_mb']))
         self.vars['vram_budget_mb'] = vram
@@ -232,6 +253,9 @@ class Launcher:
         self.cache_button = ttk.Button(buttons, text=self.t('clear_cache'), command=self.clear_cache)
         self.cache_button.pack(side='right', padx=(0, 6))
         ttk.Button(buttons, text=self.t('mods'), command=self.mods_dialog).pack(side='right', padx=(0, 6))
+        if sys.platform == 'win32':
+            self.steam_button = ttk.Button(buttons, text=self.t('steam'), command=self.add_to_steam)
+            self.steam_button.pack(side='right', padx=(0, 6))
         self.refresh_status()
 
     def load_art(self):
@@ -400,6 +424,61 @@ class Launcher:
             messagebox.showinfo(self.t('clear_cache'), message)
         self.append(message)
 
+    def add_to_steam(self):
+        """Add to Steam: a non-Steam shortcut to "Play Gravity Rush 2.exe" with art cut from the
+        user's own pic1.png/icon0.png. Steam is closed for the write (after asking) and reopened."""
+        steam = steam_shortcut.steam_dir()
+        if not steam:
+            messagebox.showerror(self.t('steam'), self.t('steam_missing'))
+            return
+        exe = tlg_run.PORT_DIR / steam_shortcut.PLAY_EXE
+        if not exe.is_file():
+            messagebox.showerror(self.t('steam'), self.t('steam_no_play'))
+            return
+        running = steam_shortcut.steam_running()
+        if running and not messagebox.askyesno(self.t('steam'), self.t('steam_close_ask')):
+            return
+        self.steam_button.configure(state='disabled')
+        if running:
+            self.append(self.t('steam_closing'))
+
+        def art(added):  # Tk images only on the Tk thread; done before Steam starts again
+            done = threading.Event()
+            self.lines.put(('steam_art', (added, done)))
+            done.wait(30)
+
+        def work():
+            try:
+                ok, _ = steam_shortcut.install(steam, exe, running, art)
+                self.lines.put(('info', self.t('steam_done')) if ok else ('error', self.t('steam_close_failed')))
+            except Exception as error:  # shown to the user, the launcher keeps running
+                self.lines.put(('error', str(error)))
+            finally:
+                self.lines.put(('steam_button', None))
+        threading.Thread(target=work, daemon=True).start()
+
+    def write_steam_art(self, added):
+        """Steam library art (Tk thread): steam_shortcut.ART_CUTS of the dump's pic1.png and
+        icon0.png as the icon. Files already there (the player's own art) are kept."""
+        picture = art_path(self.settings, 'pic1.png')
+        icon = art_path(self.settings, 'icon0.png') or tlg_run.PORT_DIR / 'launcher' / 'gr2.png'
+        full = tk.PhotoImage(file=str(picture)) if picture else None
+        cuts = steam_shortcut.ART_CUTS
+        for grid, appid in added:
+            grid.mkdir(parents=True, exist_ok=True)
+            target = grid / f'{appid}_icon.png'
+            if icon.is_file() and not target.exists():
+                target.write_bytes(icon.read_bytes())
+            if not full or full.width() != 1920 or full.height() != 1080:
+                continue
+            for suffix, box, step in cuts:
+                target = grid / f'{appid}{suffix}.png'
+                if target.exists():
+                    continue
+                image = tk.PhotoImage()
+                image.tk.call(image, 'copy', full, '-from', *box, '-subsample', step, step)
+                image.write(str(target), format='png')
+
     def append(self, line):
         self.log.configure(state='normal')
         self.log.insert('end', line if line.endswith('\n') else line + '\n')
@@ -443,6 +522,19 @@ class Launcher:
                     kind, value = item
                     if kind == 'error':
                         messagebox.showerror(self.t('error'), value)
+                    elif kind == 'info':
+                        self.append(value)
+                        messagebox.showinfo(self.t('steam'), value)
+                    elif kind == 'steam_art':
+                        try:
+                            self.write_steam_art(value[0])
+                        except (OSError, tk.TclError) as error:  # the shortcut is there; only art failed
+                            self.append(str(error))
+                        value[1].set()
+                        continue
+                    elif kind == 'steam_button':
+                        self.steam_button.configure(state='normal')
+                        continue
                     else:
                         message = self.t('ended' if value in (0, -15) else 'crashed', code=value)
                         self.append(message)

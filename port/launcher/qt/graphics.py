@@ -19,6 +19,9 @@ SETTING_ROWS = {
     's:show_fps': ('show_fps', 'switch', True),
     's:gs_outline_off': ('gs_outline_off', 'switch', False),
     's:native_audio': ('native_audio', 'switch', False),
+    's:ps4_pro': ('ps4_pro', 'switch', False),
+    's:freeze_workaround': ('freeze_workaround', 'switch', False),
+    's:dlss': ('dlss', 'switch', False),
     's:close_on_play': ('close_on_play', 'switch', True),
     's:reopen_launcher': ('reopen_launcher', 'switch', False),
     's:vram_budget_mb': ('vram_budget_mb', 'slider', False),
@@ -26,11 +29,11 @@ SETTING_ROWS = {
 DISPLAY_MODES = ('Windowed', 'Borderless', 'Fullscreen')
 OVERLAY_IDS = tuple(i.id for i in backports_table.MENU if i.tab == 'Overlay')
 SECTIONS = (
-    ('gfx_sec_image', ('s:display_mode', 's:vsync', 'menu:fsr1', 'menu:rcas', 'menu:rcas_strength')),
+    ('gfx_sec_image', ('s:display_mode', 's:vsync', 'menu:fsr1', 'menu:rcas', 'menu:rcas_strength', 's:dlss')),
     ('gfx_sec_rate', ('menu:fps_limit', 'menu:frames_queued')),
     ('gfx_sec_gpu', ('TLG_ASYNC_SHADERS', 'TLG_BACKGROUND_WARMUP', 'TLG_DEFERRED_READBACK', 'TLG_STALE_READBACK',
-                     's:close_on_play', 's:reopen_launcher')),
-    ('gfx_sec_game', ('s:gs_outline_off', 's:native_audio')),
+                     's:freeze_workaround', 's:close_on_play', 's:reopen_launcher')),
+    ('gfx_sec_game', ('s:gs_outline_off', 's:ps4_pro', 's:native_audio')),
     ('gfx_sec_vram', ('s:vram_budget_mb',)),
     ('gfx_sec_overlay', ('s:show_fps',) + OVERLAY_IDS),
 )
