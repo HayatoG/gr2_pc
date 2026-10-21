@@ -7,6 +7,7 @@
 #include "tlg_toggles.h"
 #include "tlg_freeze.h"
 #include "common/assert.h"
+#include "common/backports.h"
 #include "common/debug.h"
 #include "common/div_ceil.h"
 #include "common/hash.h"
@@ -1009,7 +1010,10 @@ ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
 
 ImageId TextureCache::FindImageFromRange(VAddr address, size_t size, bool ensure_valid) {
     ImageIds image_ids;
-    ForEachImageInRegion(address, size, [&](ImageId image_id, Image& image) {
+    // tlg: BP02 (shadPS4 145932bf, #5240) only the bucket of the first page can hold a match.
+    const bool first_page_only =
+        Common::Backports::On(Common::Backports::Id::ImageFromRangeFirst);
+    const auto collect = [&](ImageId image_id, Image& image) {
         if (image.info.guest_address != address) {
             return;
         }
@@ -1017,7 +1021,13 @@ ImageId TextureCache::FindImageFromRange(VAddr address, size_t size, bool ensure
             return;
         }
         image_ids.push_back(image_id);
-    });
+    };
+    if (first_page_only) {
+        Common::Backports::Hit(Common::Backports::Id::ImageFromRangeFirst);
+        ForEachImageWithAddress(address, collect);
+    } else {
+        ForEachImageInRegion(address, size, collect);
+    }
     if (image_ids.size() == 1) {
         // Sometimes image size might not exactly match with requested buffer size
         // If we only found 1 candidate image use it without too many questions.

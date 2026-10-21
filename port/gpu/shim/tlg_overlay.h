@@ -73,6 +73,9 @@ void CloseSaveDialog();
 /// "Saving..." panel: active 1 on (percent < 0: no bar; text null keeps the last), 0 off,
 /// 2 on for a moment (dialogs the port answers at once).
 void SaveProgress(int kind, int active, int percent, const char* text);
+/// Touchpad mode of the mouse (src/runtime_pad.c): a small touchpad with the virtual finger in
+/// the bottom-left corner while `active` (x, y: 0..1 over the pad). Any thread.
+void SetMousePad(bool active, float x, float y, bool touching, bool clicking);
 /// "Game saved" in the bottom-right corner.
 void SaveToast(int kind);
 

@@ -138,9 +138,9 @@ int main(int argc, char** argv) {
     std::printf("TLG_LOOP_LIMIT=%u TLG_LOOP_LIMIT_PER_LOOP=%u\n", total, own);
     if (!std::getenv("TLG_LOOP_LIMIT") && !std::getenv("TLG_LOOP_LIMIT_PER_LOOP")) {
         Check(total == (1u << 18) && own == 8192u, "defaults: 1 << 18 per invocation, 8192 per loop");
-        Check(Toggles::ShaderBinarySalt() == 0, "defaults keep the plain shader cache version");
+        Check(Toggles::LoopBudgetSalt() == 0, "defaults keep the plain shader cache version");
     } else {
-        Check(Toggles::ShaderBinarySalt() != 0, "other budgets get their own shader cache version");
+        Check(Toggles::LoopBudgetSalt() != 0, "other budgets get their own shader cache version");
     }
     std::filesystem::path dir;
     if (argc > 1) {

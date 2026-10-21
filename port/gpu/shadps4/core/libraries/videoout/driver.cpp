@@ -14,6 +14,7 @@
 #ifndef _WIN32
 #include <sys/resource.h>
 #endif
+#include "common/backports.h"
 #include "common/assert.h"
 #include "tlg_toggles.h"
 #include "tlg_freeze.h"
@@ -519,6 +520,7 @@ void VideoOutDriver::Flip(const Request& req) {
                         frames ? double(TlgStats::scene_draws.exchange(0)) / frames : 0.0);
             presenter->GetRasterizer().GetPipelineCache().ReportCompilerStats();
             Vulkan::WaitDiagnostics::Report();
+            Common::Backports::LogHits();
             // Frame pacing: spread of the guest flip intervals (judder that the mean hides).
             if (intervals.size() > 2) {
                 std::vector<double> sorted = intervals;

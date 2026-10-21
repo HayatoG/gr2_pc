@@ -13,6 +13,7 @@
 #include <boost/preprocessor/stringize.hpp>
 
 #include "common/assert.h"
+#include "common/backports.h"
 #include "common/debug.h"
 #include "common/polyfill_thread.h"
 #include "common/thread.h"
@@ -456,6 +457,11 @@ Liverpool::Task Liverpool::ProcessCeUpdate(std::span<const u32> ccb) {
             while (!task.handle.done()) {
                 YIELD_CE();
                 RESUME_CE(task);
+            }
+            // tlg: BP01 (shadPS4 #5258) free the finished nested task frame
+            if (Common::Backports::On(Common::Backports::Id::IndirectFrameLeak)) {
+                Common::Backports::Hit(Common::Backports::Id::IndirectFrameLeak);
+                task.handle.destroy();
             }
             break;
         }
@@ -1272,6 +1278,11 @@ Liverpool::Task Liverpool::ProcessGraphics(std::span<const u32> dcb, std::span<c
                     YIELD_GFX();
                     RESUME_GFX(task);
                 }
+                // tlg: BP01 (shadPS4 #5258) free the finished nested task frame
+                if (Common::Backports::On(Common::Backports::Id::IndirectFrameLeak)) {
+                    Common::Backports::Hit(Common::Backports::Id::IndirectFrameLeak);
+                    task.handle.destroy();
+                }
                 break;
             }
             case PM4ItOpcode::IncrementDeCounter: {
@@ -1429,6 +1440,11 @@ Liverpool::Task Liverpool::ProcessCompute(std::span<const u32> acb, u32 vqid) {
             while (!task.handle.done()) {
                 YIELD_ASC(vqid);
                 RESUME_ASC(task, vqid);
+            }
+            // tlg: BP01 (shadPS4 #5258) free the finished nested task frame
+            if (Common::Backports::On(Common::Backports::Id::IndirectFrameLeak)) {
+                Common::Backports::Hit(Common::Backports::Id::IndirectFrameLeak);
+                task.handle.destroy();
             }
             break;
         }

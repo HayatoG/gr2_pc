@@ -29,6 +29,8 @@ Por **HayatoG** · YouTube [@hayatog-dev](https://www.youtube.com/@hayatog-dev) 
 
 ## Novidades
 
+- **Mouse:** o mouse gira a câmera (analógico direito) e os botões viram botões do controle: **esquerdo = R1** (mudança de gravidade: mire com a câmera e clique), **direito = L1** (cancela a mudança), **do meio = R2** (campo de estase). Segurando **Ctrl esquerdo** (ou o botão lateral X1), o mouse vira um dedo no **touchpad**. A janela prende o mouse; **Esc solta** e um clique prende de novo. Veja [Mouse](#mouse).
+- **Correções do tradutor de shaders vindas do inFAMOUS:** atomics de float min/max com um só atomic inteiro, `S_WQM_B64` (`GR2_WQM`, ligado), barreiras de LDS e divergência de lanes (`GR2_LDS_SMALL`, `GR2_LDS_MULTI`, `GR2_LDS_READLANE`, `GR2_LANE_DIVERGENCE`; desligadas por padrão no GR2, como no inFAMOUS fora dele), wave64 no tamanho de subgrupo em que o pipeline roda, e o catálogo de correções `GR2_BP01`–`GR2_BP12` (aba **Desempenho → Correções** do menu Insert). O cache de shaders se refaz sozinho.
 - **Processadores Intel:** o jogo não fecha mais logo no começo (instrução ilegal, `0xc000001d`). O processador do PS4 tem o SSE4A da AMD, que nenhum Intel tem, e o `eboot.bin` usa 96 `EXTRQ`. Agora o port reescreve essas instruções e as emula (junto com MOVBE, BMI1 e LZCNT, se faltarem) quando o processador não as tem. Em CPUs Ryzen nada muda.
 - **Launcher bilíngue** (português e inglês, automático ou escolhido), com o **idioma do jogo** (voz e texto) escolhido ali.
 - **Linhas pretas:** o contorno do geometry shader com adjacência, que gerava os traços pretos perto dos personagens, fica desligado por padrão ([`docs/BUG_LINHAS_PRETAS.md`](docs/BUG_LINHAS_PRETAS.md), [#1](https://github.com/HayatoG/gr2_pc/issues/1)).
@@ -95,6 +97,36 @@ A lista completa, que também vai nas notas de cada Release, está em [`docs/ARQ
 
 Variáveis de ambiente do port usam o prefixo `GR2_` (o nome antigo `TLG_` continua valendo; se os dois estiverem definidos, vale o `GR2_`). `GR2_ISA_REWRITE` controla a reescrita de instruções que o processador não tem: sem definir, só as que faltam (SSE4A em qualquer Intel); `0` nunca reescreve; `1` força todas (MOVBE, BMI1, LZCNT e SSE4A, para testar a emulação num Ryzen); ou uma lista, como `sse4a` ou `movbe,bmi1`. O log mostra `ISA: CPU lacks ...` ou `ISA: forced rewrite of N sites`.
 
+## Mouse
+
+O mouse funciona com ou sem controle (os botões dele somam aos do controle). A janela do jogo prende o mouse enquanto tem o foco e o menu Insert está fechado; **Esc solta** (o cursor volta) e **um clique na janela prende de novo** (esse clique não vira botão do jogo).
+
+| Mouse | No jogo (Gravity Rush 2) |
+|---|---|
+| Mover | gira a câmera (analógico direito) |
+| Botão esquerdo | R1: mudança de gravidade (mire com a câmera e clique para cair naquela direção) |
+| Botão direito | L1: cancela a mudança de gravidade |
+| Botão do meio | R2: campo de estase (pegar objetos) |
+| Botões laterais X1 / X2 e rodinha | livres (veja `GR2_KEY_MAP`); X1 também é a tecla do modo touchpad |
+
+**Modo touchpad:** segure **Ctrl esquerdo** ou o **botão lateral X1**. A câmera para e o mouse leva um dedo virtual pelo touchpad (um quadradinho no canto inferior esquerdo mostra onde ele está): esquerdo toca/clica (arrastar desliza), do meio toca sem clicar, direito = dois dedos.
+
+**Variáveis** (`GR2_` e `TLG_` valem igual; `mouse_*` também ficam no `tlg.ini` e na aba **Controle** do menu Insert):
+
+| Variável | Padrão | O que faz |
+|---|---|---|
+| `GR2_MOUSE` | `1` | `0` desliga o mouse (a janela não prende mais) |
+| `GR2_MOUSE_SENS` | `1.0` | sensibilidade da câmera (0,05–10) |
+| `GR2_MOUSE_INVERT_Y` | `0` | `1` inverte o eixo Y |
+| `GR2_MOUSE_SMOOTHING` | `0.5` | suavização (0–0,95) |
+| `GR2_MOUSE_ACCEL` | `0` | aceleração (0–2) |
+| `GR2_MOUSE_DEADZONE` | `0.1` | anti-zona morta: movimentos pequenos pulam a zona morta do jogo (0–0,5) |
+| `GR2_MOUSE_PAD` | `1` | `0` desliga o modo touchpad do mouse |
+| `GR2_MOUSE_PAD_KEY` | `Left Ctrl\|Mouse X1` | tecla(s) do modo touchpad |
+| `GR2_MOUSE_PAD_MODE` | `hold` | `toggle`: um toque liga, outro desliga |
+| `GR2_KEY_MAP` | — | remapeia teclas e mouse: `"square=Mouse Left\|E,r1=Mouse X2,l1=Wheel Down"`; `none` tira todos |
+| `GR2_MOUSE_LOG` | `0` | `1` mostra no log o que o jogo recebe do mouse |
+
 ## Solução de problemas
 
 **`Device lost during submit` (o jogo fecha com código 23 depois de um tempo, mais visto no Windows):** a placa ficou presa num shader e o sistema reiniciou a GPU (no Windows, o TDR depois de ~2 s). A causa mais comum é um laço de shader que termina no PS4 mas não no PC. Desde esta versão, todo laço de shader tem um limite de voltas: `GR2_LOOP_LIMIT_PER_LOOP` (padrão `8192` por laço, contado de novo a cada vez que o laço começa) e `GR2_LOOP_LIMIT` (padrão `262144` no total por execução do shader). Quando passa do limite, o laço é interrompido, e no pior caso um quadro sai errado em vez de o jogo fechar. Se ainda cair, tente valores menores (`GR2_LOOP_LIMIT_PER_LOOP=2048`); se algum efeito aparecer cortado (reflexo, sombra ou partícula incompleta), tente valores maiores. `0` desliga: `GR2_LOOP_LIMIT=0` desliga os dois limites, e `GR2_LOOP_LIMIT_PER_LOOP=0` só o de cada laço. O log mostra os valores em uso (`tlg: shader loop budget ...`), e o cache de shaders é refeito sozinho quando eles mudam.
@@ -156,6 +188,8 @@ The screenshots and the performance chart are at the top of this page.
 
 ## What's new
 
+- **Mouse:** the mouse turns the camera (right stick) and its buttons become controller buttons: **left = R1** (gravity shift: aim with the camera and click), **right = L1** (cancel the shift), **middle = R2** (stasis field). Holding **Left Ctrl** (or the X1 side button) turns the mouse into a finger on the **touchpad**. The window takes the mouse; **Esc releases it** and a click takes it back. See [Mouse](#mouse-1).
+- **Shader recompiler fixes from inFAMOUS:** float atomic min/max with a single integer atomic, `S_WQM_B64` (`GR2_WQM`, on), LDS barriers and lane divergence (`GR2_LDS_SMALL`, `GR2_LDS_MULTI`, `GR2_LDS_READLANE`, `GR2_LANE_DIVERGENCE`; off by default in GR2, as inFAMOUS keeps them for itself), wave64 lowering at the subgroup size the pipeline runs with, and the `GR2_BP01`–`GR2_BP12` fix catalog (Insert menu, **Performance → Fixes**). The shader cache rebuilds itself.
 - **Intel CPUs:** the game no longer dies right at the start (illegal instruction, `0xc000001d`). The PS4's processor has AMD's SSE4A, which no Intel CPU has, and `eboot.bin` uses 96 `EXTRQ`. The port now rewrites and emulates those instructions (and MOVBE, BMI1 and LZCNT, if missing) when the CPU lacks them. Nothing changes on Ryzen CPUs.
 - **Bilingual launcher** (Portuguese and English, automatic or chosen), where the **game language** (voice and text) is picked too.
 - **Black streaks:** the adjacency geometry-shader outline that drew black streaks near characters is off by default ([`docs/BUG_LINHAS_PRETAS.md`](docs/BUG_LINHAS_PRETAS.md), in Portuguese, [#1](https://github.com/HayatoG/gr2_pc/issues/1)).
@@ -217,6 +251,36 @@ The full list, which also goes in the notes of every Release, is in [`docs/ARQUI
 3. In game, **F10** toggles the FPS counter, and **Insert** (or R3 + L2 on a controller) opens the port's menu.
 
 The port's environment variables use the `GR2_` prefix (the old `TLG_` name still works; when both are set, `GR2_` wins). `GR2_ISA_REWRITE` controls the rewrite of instructions the CPU lacks: unset, only the missing ones (SSE4A on any Intel CPU); `0` never rewrites; `1` forces them all (MOVBE, BMI1, LZCNT and SSE4A, to test the emulation on a Ryzen); or a list such as `sse4a` or `movbe,bmi1`. The log shows `ISA: CPU lacks ...` or `ISA: forced rewrite of N sites`.
+
+## Mouse
+
+The mouse works with or without a controller (its buttons add to the controller's). The game window takes the mouse while it has focus and the Insert menu is closed; **Esc releases it** (the cursor comes back) and **a click in the window takes it again** (that click does not reach the game).
+
+| Mouse | In game (Gravity Rush 2) |
+|---|---|
+| Move | turns the camera (right stick) |
+| Left button | R1: gravity shift (aim with the camera, click to fall that way) |
+| Right button | L1: cancel the gravity shift |
+| Middle button | R2: stasis field (pick objects up) |
+| X1 / X2 side buttons and wheel | free (see `GR2_KEY_MAP`); X1 is also the touchpad-mode key |
+
+**Touchpad mode:** hold **Left Ctrl** or the **X1 side button**. The camera stops and the mouse moves a virtual finger on the touchpad (a small pad in the bottom-left corner shows it): left touches/clicks (dragging swipes), middle touches without a click, right = two fingers.
+
+**Variables** (`GR2_` and `TLG_` work the same; `mouse_*` also live in `tlg.ini` and in the Insert menu's **Controls** tab):
+
+| Variable | Default | What it does |
+|---|---|---|
+| `GR2_MOUSE` | `1` | `0` turns the mouse off (the window no longer takes it) |
+| `GR2_MOUSE_SENS` | `1.0` | camera sensitivity (0.05–10) |
+| `GR2_MOUSE_INVERT_Y` | `0` | `1` inverts the Y axis |
+| `GR2_MOUSE_SMOOTHING` | `0.5` | smoothing (0–0.95) |
+| `GR2_MOUSE_ACCEL` | `0` | acceleration (0–2) |
+| `GR2_MOUSE_DEADZONE` | `0.1` | anti-dead zone: small motions skip the game's stick dead zone (0–0.5) |
+| `GR2_MOUSE_PAD` | `1` | `0` turns the mouse touchpad mode off |
+| `GR2_MOUSE_PAD_KEY` | `Left Ctrl\|Mouse X1` | touchpad-mode key(s) |
+| `GR2_MOUSE_PAD_MODE` | `hold` | `toggle`: one press turns it on, another off |
+| `GR2_KEY_MAP` | — | remaps keys and mouse: `"square=Mouse Left\|E,r1=Mouse X2,l1=Wheel Down"`; `none` removes all |
+| `GR2_MOUSE_LOG` | `0` | `1` logs what the game gets from the mouse |
 
 ## Troubleshooting
 

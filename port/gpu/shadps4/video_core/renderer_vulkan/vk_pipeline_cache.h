@@ -85,6 +85,7 @@ struct Program {
 struct DrawIndirectParams {
     u16 vertex_sgpr_offset;
     u32 instance_sgpr_offset;
+    bool is_indirect = false; // tlg: BP07 and BP11 (the draw is an indirect one)
 };
 
 } // namespace Vulkan
@@ -106,6 +107,7 @@ struct PipelineSelection {
     GraphicsPipelineKey graphics_key{};
     bool motion = false;
     bool compilation_pending = false;
+    bool sync_compile = false; ///< tlg: BP07, shaders and pipeline of this draw compile now
     DrawIndirectParams draw_indirect_params{};
     struct PrepWorker* worker{}; ///< set: read-only selection for a draw-preparation worker
 };
@@ -188,6 +190,11 @@ private:
     void PublishShaders(bool wait = false);
     void PublishGraphics(bool wait = false);
     void FinishCompilations();
+    /// tlg: BP08, the driver's VkPipelineCache blob kept between sessions (see the .cpp).
+    void StartDriverCacheSaver();
+    void StopDriverCacheSaver();
+    bool SaveDriverCache();
+    bool SaveDriverCacheUnchecked();
     void SeedWorkerCaches();
     bool CheckCacheProfile();
     struct BackgroundWarmup;
@@ -228,6 +235,8 @@ private:
     std::unique_ptr<AsyncCompiler> compiler, capture_compiler;
     std::vector<vk::UniquePipelineCache> worker_pipeline_caches;
     bool worker_caches_seeded = false;
+    struct DriverCacheSaver;
+    DriverCacheSaver* driver_saver = nullptr; ///< tlg: BP08
     /// tlg: TLG_PARALLEL_WARMUP: WarmUp builds the cached pipelines on these threads.
     struct WarmupPool;
     WarmupPool* warmup_pool = nullptr;

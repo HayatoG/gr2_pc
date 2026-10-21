@@ -127,6 +127,11 @@ ImageInfo::ImageInfo(const AmdGpu::Image& image, const Shader::ImageResource& de
     }
     type = image.GetBaseType();
     props.is_host_2d = image.IsBlock1D();
+    if (AmdGpu::All1DAs2D() && props.is_host_2d && type == AmdGpu::ImageType::Color1D) {
+        // tlg: BP09, as a 2D image from here on, so that it matches the 2D render target it is
+        // sampled from (the colour-grading LUT) instead of being a separate, stale image.
+        type = AmdGpu::ImageType::Color2D;
+    }
     if (image.IsBlock1D()) {
         // tlg: diagnostics for the BC 1D -> 2D promotion (one line per distinct shape).
         static std::mutex seen_mutex;

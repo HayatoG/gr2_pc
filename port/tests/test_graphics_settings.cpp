@@ -88,6 +88,18 @@ int main() {
     const std::string cheats = Read(path);
     assert(cheats.find("cheat_double_jumps=1\n") != std::string::npos);
     assert(cheats.find("cheat_very_hard=1\n") != std::string::npos);
+    {
+        std::ofstream out(path);
+        out << "bp06=1\nbp12=0\nwqm=0\nbc_tiny=1\nbp99=1\n";
+    }
+    TlgSettings::Load();
+    assert(v.backport_pref[5] == 1 && v.backport_pref[11] == 0 && v.backport_pref[0] == -1);
+    TlgSettings::Save();
+    const std::string fixes = Read(path);
+    for (const char* line : {"bp06=1\n", "bp12=0\n", "wqm=0\n", "bc_tiny=1\n"}) {
+        assert(fixes.find(line) != std::string::npos);
+    }
+    assert(fixes.find("bp01=") == std::string::npos && fixes.find("bp99") == std::string::npos);
     std::remove(path);
     std::puts("PASS: graphics settings");
 }

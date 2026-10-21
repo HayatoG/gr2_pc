@@ -10,9 +10,12 @@
 #include "tlg_toggles.h"
 #include "tlg_freeze.h"
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <atomic>
 #include <condition_variable>
 #include <boost/asio/io_context.hpp>
+#include "common/backports.h"
 #include "common/polyfill_thread.h"
 #include "video_core/renderdoc.h"
 #include <cstring>
@@ -217,6 +220,38 @@ static void StartProfileWriter() {
 
 extern "C" int tlggpu_init(const TlgGpuConfig* config) {
     TlgSettings::Load();
+    // tlg: the fixes chosen in the launcher or the in-game menu (bpNN in tlg.ini); an environment
+    // variable TLG_BPnn / ISS_BPnn still wins.
+    {
+        const auto& settings = TlgSettings::Get();
+        for (int i = 0; i < TlgSettings::kBackportPrefs; ++i) {
+            const int pref = settings.backport_pref[i].load();
+            if (pref >= 0) {
+                Common::Backports::ApplyConfig(static_cast<std::size_t>(i), pref != 0);
+            }
+        }
+        // gr2: the A/B switches of the menu (wqm, lds_*, lane_divergence, rfl_all, block1d) are
+        // read from TLG_<NAME> once, when first used; GR2 has no launcher table for them yet, so
+        // the tlg.ini choice becomes that variable here unless the environment already sets it.
+        for (int e = 0; e < TlgSettings::kExtraPrefs; ++e) {
+            const int pref = settings.extra_pref[e].load();
+            if (pref < 0) {
+                continue;
+            }
+            std::string name = "TLG_";
+            for (const char* c = TlgSettings::kExtraKeys[e]; *c; ++c) {
+                name += static_cast<char>(std::toupper(static_cast<unsigned char>(*c)));
+            }
+            const char* current = std::getenv(name.c_str());
+            if (!(current && *current)) {
+#ifdef _WIN32
+                _putenv_s(name.c_str(), pref ? "1" : "0");
+#else
+                setenv(name.c_str(), pref ? "1" : "0", 1);
+#endif
+            }
+        }
+    }
 #ifdef TLG_PGO_GENERATE
     StartProfileWriter();
 #endif
@@ -365,6 +400,21 @@ extern "C" void tlggpu_overlay_notice(const char* text, float seconds) {
 
 extern "C" int tlggpu_overlay_captures_input(void) {
     return TlgOverlay::CapturesInput() ? 1 : 0;
+}
+
+extern "C" void tlggpu_input_settings(TlgGpuInputSettings* out) {
+    const auto& s = TlgSettings::Get();
+    out->mouse_enabled = s.mouse_enabled ? 1 : 0;
+    out->invert_y = s.mouse_invert_y ? 1 : 0;
+    out->sensitivity = s.mouse_sensitivity;
+    out->smoothing = s.mouse_smoothing;
+    out->accel = s.mouse_accel;
+    out->deadzone = s.mouse_deadzone;
+    std::snprintf(out->key_map, sizeof(out->key_map), "%s", s.key_map.c_str());
+}
+
+extern "C" void tlggpu_mouse_pad_hud(int active, float x, float y, int touching, int clicking) {
+    TlgOverlay::SetMousePad(active != 0, x, y, touching != 0, clicking != 0);
 }
 
 extern "C" int tlggpu_text_input_begin(const char* initial, const char* prompt) {

@@ -9,6 +9,7 @@
 #include "../../src/cheat_hook.h"
 
 #include <atomic>
+#include <string>
 #include <cstdint>
 
 namespace TlgSettings {
@@ -27,6 +28,12 @@ inline constexpr int OutputWidths[] = {1280, 1920, 2560, 3840};
 inline constexpr int OutputHeights[] = {720, 1080, 1440, 2160};
 inline constexpr int OutputCount = 4;
 inline constexpr int OutputDefault = 1; ///< 1920x1080, the game's own size
+
+inline constexpr int kBackportPrefs = 32;
+/// A/B switches read once at start (recompiler_toggles.h, device creation); tlg.ini keys.
+inline constexpr const char* kExtraKeys[] = {"wqm", "lds_small", "lds_multi", "lds_readlane",
+                                             "lane_divergence", "rfl_all", "block1d"};
+inline constexpr int kExtraPrefs = sizeof(kExtraKeys) / sizeof(kExtraKeys[0]);
 
 struct Values {
     std::atomic<int> upscaler{UpscalerFsr3};
@@ -101,12 +108,29 @@ struct Values {
     std::atomic<bool> dlss_supported{false};
     std::atomic<const char*> dlss_problem{nullptr};
 
+    /// Fix switches that apply on the next start (the launcher turns them into TLG_BPnn /
+    /// TLG_<NAME> variables): bp01..bp32 and the A/B keys of ExtraKeys(). -1 = not in tlg.ini
+    /// (the built-in default), 0 / 1 = chosen. Kept so Save() does not drop what the launcher wrote.
+    std::atomic<int> backport_pref[kBackportPrefs];
+    std::atomic<int> extra_pref[kExtraPrefs];
+    Values() {
+        for (auto& p : backport_pref) p = -1;
+        for (auto& p : extra_pref) p = -1;
+    }
+
     /// Startup settings for the explicit TLG_RENDER_RES compatibility patch only.
     int startup_preset = NativeAA;
     int startup_upscaler = UpscalerFsr3;
     bool startup_object_motion = true;
     int startup_output_res = OutputDefault;
     int startup_live_resolution = 0;
+
+    // Mouse and keyboard (src/runtime_pad.c through tlggpu_input_settings, src/mouse_stick.h):
+    // the mouse turns the camera (right stick). Live from the menu.
+    std::atomic<bool> mouse_enabled{true}, mouse_invert_y{false};
+    std::atomic<float> mouse_sensitivity{1.0f}, mouse_smoothing{0.5f}, mouse_accel{0.0f}, mouse_deadzone{0.1f};
+    /// Keyboard and mouse button remap (TLG_KEY_MAP syntax); written by Load only, read once.
+    std::string key_map;
 };
 
 Values& Get();

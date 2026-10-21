@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "tlg_toggles.h"
+#include <atomic>
+#include <cstdlib>
 #include <ranges>
 #include "common/assert.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
@@ -51,7 +53,8 @@ static vk::ImageType ConvertImageType(AmdGpu::ImageType type) noexcept {
     switch (type) {
     case AmdGpu::ImageType::Color1D:
     case AmdGpu::ImageType::Color1DArray:
-        return vk::ImageType::e1D;
+        // tlg: BP09, 1D images are 2D of height 1 on the host.
+        return AmdGpu::All1DAs2D() ? vk::ImageType::e2D : vk::ImageType::e1D;
     case AmdGpu::ImageType::Color2D:
     case AmdGpu::ImageType::Color2DMsaa:
     case AmdGpu::ImageType::Color2DArray:
@@ -183,6 +186,23 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
         LOG_ERROR(Render_Vulkan, "image format {} type {} is not supported (flags {}, usage {})",
                   vk::to_string(supported_format), vk::to_string(format_info.type),
                   vk::to_string(format_info.flags), vk::to_string(format_info.usage));
+        // tlg: TLG_BC1D_LOG=1 (PROPOSTA_BC1D_NVIDIA.diff), diagnostics only: one line per image
+        // created although the driver reports its format/type unsupported (BC 1D on NVIDIA), to
+        // tell streaming churn from one hot image and to match against flicker moments.
+        static const bool bc1d_log = [] {
+            const char* e = std::getenv("TLG_BC1D_LOG");
+            return e && *e == '1';
+        }();
+        if (bc1d_log) {
+            static std::atomic<u32> created{0};
+            LOG_WARNING(Render_Vulkan,
+                        "tlg: unsupported image #{} {} {} {}x{} layers {} mips {} tile {} at "
+                        "{:#x}+{:#x} tick {}",
+                        created.fetch_add(1) + 1, vk::to_string(supported_format),
+                        vk::to_string(format_info.type), info.size.width, info.size.height,
+                        info.resources.layers, info.resources.levels, AmdGpu::NameOf(info.tile_mode),
+                        info.guest_address, info.guest_size, runtime->GetScheduler().CurrentTick());
+        }
     }
     supported_samples = image_format_properties.result == vk::Result::eSuccess
                             ? image_format_properties.value.imageFormatProperties.sampleCounts
