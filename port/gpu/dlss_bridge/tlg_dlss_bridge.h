@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define TLG_DLSS_BRIDGE_ABI 1
+#define TLG_DLSS_BRIDGE_ABI 2
 
 typedef void (*TlgDlssLogFn)(int warning, const char* message);
 
@@ -48,6 +48,8 @@ typedef struct TlgDlssEvaluate {
     int32_t reset;
     float frame_ms;
     float sharpness; // 0..1; 0 leaves the output unsharpened
+    float mv_scale_x; // motion vector scale (ABI 2): 1 for render pixels, else the game's units
+    float mv_scale_y;
 } TlgDlssEvaluate;
 
 typedef struct TlgDlssApi {

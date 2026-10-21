@@ -69,6 +69,12 @@ while ((${#queue[@]})); do
     done < <(llvm-readobj --coff-imports "$binary" | awk '$1 == "Name:" && tolower($2) ~ /\.dll$/ {print $2}')
 done
 echo "Packaged $(find "$dest/out" -maxdepth 1 -iname '*.dll' | wc -l) DLLs from /clang64/bin"
+# DLSS (optional): the bridge and NVIDIA's DLL with its license, when build_dlss.sh made them.
+if [[ -f out/tlg_dlss.dll && -f out/nvngx_dlss.dll ]]; then
+    cp out/tlg_dlss.dll out/nvngx_dlss.dll "$dest/out/"
+    [[ -f out/NVIDIA-DLSS-LICENSE.txt ]] && cp out/NVIDIA-DLSS-LICENSE.txt "$dest/out/"
+    echo "Packaged DLSS: tlg_dlss.dll, nvngx_dlss.dll"
+fi
 cp -r scripts "$dest/"
 find "$dest" -name __pycache__ -prune -exec rm -r {} +
 cp LICENSE packaging/README-player.md "$dest/"

@@ -270,7 +270,13 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
     }
     // tlg: the G-buffer pass (5+ color targets) holds the scene depth, and its constants the
     // main camera (shadow passes bind the same layout with the light's camera).
-    gbuffer_draw = camera_motion->Enabled() && std::popcount(key.mrt_mask) >= 5 && db_desc.first;
+    // TLG_GBUFFER_MRT changes the count (Gravity Rush 2's G-buffer has 3 or 4 targets).
+    static const int gbuffer_targets = [] {
+        const char* env = std::getenv("TLG_GBUFFER_MRT");
+        return env && env[0] ? std::clamp(std::atoi(env), 2, 8) : 5;
+    }();
+    gbuffer_draw = camera_motion->Enabled() && std::popcount(key.mrt_mask) >= gbuffer_targets &&
+                   db_desc.first;
     if (gbuffer_draw) {
         camera_motion->OnGBufferPass(db_desc.first);
     }
@@ -1028,6 +1034,13 @@ void Rasterizer::DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw
     motion_draw = pipeline->GetGraphicsKey().motion_vectors;
     motion_geometry = 0;
 
+    // tlg: a draw-triggered upscale (TLG_UPSCALE_BEFORE_PS) runs before this draw binds the
+    // scene color it reads.
+    if (upscaler->Enabled()) {
+        if (const auto* ps = pipeline->GetStages()[u32(Shader::SwStage::Fragment)]) {
+            upscaler->OnDrawShader(ps->pgm_hash);
+        }
+    }
     PrepareRenderState(pipeline);
     if (upscaler->Enabled() && std::popcount(pipeline->GetGraphicsKey().mrt_mask) == 1) {
         const auto& viewport = Regs().viewports[0];
@@ -2474,6 +2487,11 @@ void Rasterizer::BindTextures(const Shader::Info& stage, const PreparedStage* pr
             }
 
             bound_images.emplace_back(image_id);
+            // tlg: Gravity Rush 2's motion vector compute shader: the image it writes.
+            if (is_storage && upscaler->GameMotionShader() &&
+                stage.pgm_hash == upscaler->GameMotionShader()) {
+                upscaler->OnGameMotion(image_id);
+            }
 
             auto& image = texture_cache.GetImage(image_id);
             auto& image_view = texture_cache.FindTexture(

@@ -335,7 +335,17 @@ std::string OverlayText() {
     sample.fps = frame_ms_avg > 0.0f ? 1000.0f / frame_ms_avg : 0.0f;
     sample.frame_ms = frame_ms_avg;
     sample.upscaler = UpscalerLabel(s.upscaler);
-    return P::Format(sample, items, s.overlay_layout == 0);
+    std::string text = P::Format(sample, items, s.overlay_layout == 0);
+    // Game motion vectors (testing): always show whether the upscaler runs and the F7 mode.
+    if (std::getenv("TLG_GAME_MOTION_CS") && sample.upscaler.empty()) {
+        text += "\nDLSS off (F6 turns it on)";
+    } else if (std::getenv("TLG_GAME_MOTION_CS")) {
+        const char* wait = s.upscaler_wait;
+        text += "\n" + sample.upscaler + " MV " + std::to_string(s.game_motion_mode + 1) +
+                (s.upscaler_ran ? std::string(": on")
+                                : std::string(": waiting (") + (wait ? wait : "?") + ")");
+    }
+    return text;
 }
 
 constexpr const char* Unsupported = "Unavailable: game version or code signature mismatch.";
@@ -1567,12 +1577,39 @@ bool HandleEvent(const SDL_Event& event) {
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP: {
         const bool down = event.type == SDL_EVENT_KEY_DOWN;
-        static const bool capture_key = [] {
+        static const bool capture_key = [] { // F11 frame capture; TLG_FRAME_CAPTURE_KEY=0 turns it off
             const char* env = std::getenv("TLG_FRAME_CAPTURE_KEY");
-            return env && *env == '1';
+            return !env || *env != '0';
         }();
         if (down && !event.key.repeat && capture_key && event.key.key == SDLK_F11) {
             Vulkan::FrameCapture::Request();
+            return true;
+        }
+        // tlg: F7 cycles how the game's own motion vectors are read (TLG_GAME_MOTION_CS, testing).
+        if (down && !event.key.repeat && event.key.key == SDLK_F7 && std::getenv("TLG_GAME_MOTION_CS")) {
+            auto& settings = TlgSettings::Get();
+            const int mode = (settings.game_motion_mode + 1) % TlgSettings::GameMotionModes;
+            settings.game_motion_mode = mode;
+            std::printf("Upscaler: game motion vectors, mode %d\n", mode + 1);
+            return true;
+        }
+        // tlg: F6 switches the game-motion upscaler (DLSS) on and off live, for an A/B look.
+        if (down && !event.key.repeat && event.key.key == SDLK_F6 && std::getenv("TLG_GAME_MOTION_CS")) {
+            auto& settings = TlgSettings::Get();
+            static int chosen = TlgSettings::UpscalerDlss;
+            if (settings.upscaler != TlgSettings::UpscalerOff) {
+                chosen = settings.upscaler;
+                settings.upscaler = TlgSettings::UpscalerOff;
+            } else {
+                settings.upscaler = chosen;
+            }
+            std::printf("Upscaler: %s (F6)\n", settings.upscaler == TlgSettings::UpscalerOff ? "off" : "on");
+            return true;
+        }
+        // tlg: F8 dumps the upscaler's next inputs and output (game motion vectors, testing).
+        if (down && !event.key.repeat && event.key.key == SDLK_F8 && std::getenv("TLG_GAME_MOTION_CS")) {
+            TlgSettings::Get().upscaler_dump = true;
+            std::printf("Upscaler: dump requested\n");
             return true;
         }
         // tlg: F10 shows or hides the performance overlay (FPS counter) at any time.

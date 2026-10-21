@@ -63,6 +63,8 @@ public:
 
     /// Before a compute dispatch: the post-processing combine shader triggers the upscale.
     void OnDispatch(u64 cs_hash);
+    /// Before a draw is prepared: TLG_UPSCALE_BEFORE_PS's pixel shader triggers the upscale.
+    void OnDrawShader(u64 ps_hash);
 
     /// Start of a frame in the command stream (display pass).
     bool OnFrameStart();
@@ -82,6 +84,16 @@ public:
     /// the upscale (post and UI are not jittered).
     [[nodiscard]] std::array<float, 2> Jitter() const noexcept {
         return done_this_frame ? std::array<float, 2>{} : jitter;
+    }
+
+    /// Gravity Rush 2: the compute shader that writes the game's own motion vectors
+    /// (TLG_GAME_MOTION_CS), 0 when the port computes them from the camera.
+    [[nodiscard]] u64 GameMotionShader() const noexcept {
+        return game_motion_cs;
+    }
+    /// The image that shader writes this frame (R16G16 float, render size).
+    void OnGameMotion(VideoCore::ImageId motion) {
+        game_motion = motion;
     }
 
     // Scaled presets.
@@ -171,7 +183,8 @@ private:
     /// Records DLSS into `cmdbuf` (output in General). `hdr`: linear scene color input.
     bool RecordDlss(vk::CommandBuffer cmdbuf, const Dlss::Resource& color,
                     const Dlss::Resource& depth, u32 w, u32 h, u32 ow, u32 oh, float frame_ms,
-                    bool hdr);
+                    bool hdr, const Dlss::Resource* motion = nullptr,
+                    std::array<float, 2> mv_scale = {1.0f, 1.0f});
     /// Records FSR 4 into output_image; on a permanent failure FSR 3 takes over.
     bool RecordFsr4(vk::CommandBuffer cmdbuf, Fsr4Upscaler::Image color, Fsr4Upscaler::Image depth,
                     u32 w, u32 h, u32 ow, u32 oh, float frame_ms);
@@ -195,8 +208,15 @@ private:
     bool enabled = false;
     bool failed = false;
     u64 trigger_hash = 0x9a9cf8a9;
+    u64 trigger_ps = 0;                ///< TLG_UPSCALE_BEFORE_PS (replaces trigger_hash)
+    u64 game_motion_cs = 0;            ///< TLG_GAME_MOTION_CS
+    VideoCore::ImageId game_motion{};  ///< this frame's game motion vectors, when used
     VideoCore::ImageId scene_color{};
     bool done_this_frame = false;
+    bool waited_this_frame = false; ///< the attach point was reached (overlay status)
+    void OnTrigger(); ///< the attach point: run the upscale if everything is ready
+    u32 status_frames = 0, status_runs = 0, status_triggers = 0; ///< periodic status log
+    u32 starts_since_run = 1000; ///< frame starts since the last upscale (overlay)
     u32 preset_file_frames = 0; ///< TLG_PRESET_FILE polling
     int applied_output = -1;
     bool snapshot_taken = false;

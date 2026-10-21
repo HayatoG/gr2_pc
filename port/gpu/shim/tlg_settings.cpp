@@ -225,6 +225,9 @@ void Load() {
             Set(v, key, value);
         }
     }
+    if (const char* mode = std::getenv("TLG_GAME_MV_MODE"); mode && mode[0]) {
+        v.game_motion_mode = std::clamp(std::atoi(mode) - 1, 0, GameMotionModes - 1); // 1-based
+    }
     v.startup_preset = v.preset;
     v.startup_upscaler = v.upscaler;
     v.startup_object_motion = v.object_motion;

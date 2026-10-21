@@ -178,8 +178,21 @@ TemporalUpscaler::TemporalUpscaler(const Instance& instance_, Scheduler& schedul
     if (const char* hash = std::getenv("TLG_UPSCALE_BEFORE_CS")) {
         trigger_hash = std::strtoull(hash, nullptr, 16);
     }
+    // Or before a draw: Gravity Rush 2's tonemap pass reads the scene color every frame.
+    if (const char* hash = std::getenv("TLG_UPSCALE_BEFORE_PS"); hash && hash[0]) {
+        trigger_ps = std::strtoull(hash, nullptr, 16);
+        trigger_hash = 0;
+        std::printf("Upscaler: runs before the draw with pixel shader %016llx\n",
+                    static_cast<unsigned long long>(trigger_ps));
+    }
     if (const char* hash = std::getenv("TLG_UI_TRIGGER_VS")) {
         ui_trigger_vs = std::strtoull(hash, nullptr, 16);
+    }
+    // Gravity Rush 2 renders its own motion vectors: the compute shader that writes them.
+    if (const char* hash = std::getenv("TLG_GAME_MOTION_CS"); hash && hash[0]) {
+        game_motion_cs = std::strtoull(hash, nullptr, 16);
+        std::printf("Upscaler: game motion vectors from compute shader %016llx\n",
+                    static_cast<unsigned long long>(game_motion_cs));
     }
     if (const char* res = std::getenv("TLG_OUTPUT_RES")) {
         u32 w = 0, h = 0;
@@ -324,13 +337,33 @@ bool TemporalUpscaler::OnFrameStart() {
     }
     TlgSettings::Get().active_render_width = Scaled() ? render_width : scene_targets.Size().width;
     TlgSettings::Get().active_render_height = Scaled() ? render_height : scene_targets.Size().height;
-    if (changed || !dispatched_last_frame) reset = true;
+    // A frame start without an upscale resets the history, unless the upscale ran at the start
+    // before (Gravity Rush 2 has two frame starts per frame, one per display pass).
+    if (changed || (!dispatched_last_frame && starts_since_run >= 1)) reset = true;
     if (changed) jitter_index = 0;
     applied_preset = preset;
     applied_output = output;
     applied_upscaler = upscaler;
     last_active = active;
     last_jitter = jitter_on;
+    // Overlay: ran within the last few frame starts (Gravity Rush 2 starts two per frame, at
+    // each of its display passes, and only one of them runs the upscale).
+    starts_since_run = dispatched_last_frame ? 0 : std::min(starts_since_run + 1, 1000u);
+    TlgSettings::Get().upscaler_ran = starts_since_run < 4;
+    if (!dispatched_last_frame && !waited_this_frame) {
+        TlgSettings::Get().upscaler_wait = "attach point not reached";
+    }
+    waited_this_frame = false;
+    // Game motion vectors (testing): what the upscaler did, every 300 frames.
+    ++status_frames;
+    status_runs += dispatched_last_frame ? 1 : 0;
+    if (game_motion_cs && status_frames >= 300) {
+        const char* wait = TlgSettings::Get().upscaler_wait;
+        std::printf("Upscaler status: ran %u of %u frames, attach point reached %u times, failed %d, "
+                    "last reason: %s\n", status_runs, status_frames, status_triggers, int(failed),
+                    dispatched_last_frame ? "-" : wait ? wait : "?");
+        status_frames = status_runs = status_triggers = 0;
+    }
     dispatched_last_frame = false;
 
     // The display pass of an upscaled frame reads the upscaled UI image.
@@ -340,6 +373,7 @@ bool TemporalUpscaler::OnFrameStart() {
     done_this_frame = false;
     ldr_target = {};
     scene_color = {};
+    game_motion = {};
     snapshot_taken = false;
     opaque_valid = false;
     mask_ready = false;
@@ -357,12 +391,40 @@ bool TemporalUpscaler::OnFrameStart() {
     return changed;
 }
 
+void TemporalUpscaler::OnDrawShader(u64 ps_hash) {
+    if (trigger_ps && ps_hash == trigger_ps) {
+        OnTrigger();
+    }
+}
+
 void TemporalUpscaler::OnDispatch(u64 cs_hash) {
-    if (cs_hash != trigger_hash || done_this_frame || failed || Scaled()) {
+    if (cs_hash == trigger_hash) {
+        OnTrigger();
+    }
+}
+
+void TemporalUpscaler::OnTrigger() {
+    ++status_triggers;
+    if (done_this_frame || failed || Scaled()) {
+        waited_this_frame = true;
+        TlgSettings::Get().upscaler_wait = failed          ? "stopped after a failure"
+                                           : Scaled()      ? "scaled preset"
+                                                           : "already ran this frame";
         return;
     }
     done_this_frame = true;
-    if (!scene_color || !camera_motion.Ready() || !Active()) {
+    // With the game's own motion vectors only the scene depth is needed from CameraMotion.
+    const bool motion_ready = game_motion_cs ? (game_motion && camera_motion.Depth())
+                                             : camera_motion.Ready();
+    waited_this_frame = true;
+    auto& wait = TlgSettings::Get().upscaler_wait;
+    wait = !Active()                   ? "off"
+         : !scene_color                ? "no scene color"
+         : !camera_motion.Depth()      ? "no scene depth"
+         : game_motion_cs && !game_motion ? "no game motion vectors"
+         : !motion_ready               ? "no camera"
+                                       : nullptr;
+    if (!scene_color || !motion_ready || !Active()) {
         reset = true;
         return;
     }
@@ -1010,9 +1072,22 @@ void TemporalUpscaler::Run() {
     if (color.info.pixel_format != vk::Format::eR16G16B16A16Sfloat ||
         depth.info.size.width != ow || depth.info.size.height != oh ||
         !(color.usage_flags & vk::ImageUsageFlagBits::eStorage)) {
+        TlgSettings::Get().upscaler_wait = "scene color and depth do not match";
         return;
     }
+    // Gravity Rush 2: the game's motion vectors (DLSS and FSR 3.1 take a scale for their units).
+    VideoCore::Image* game = nullptr;
+    if (game_motion_cs) {
+        game = &texture_cache.GetImage(game_motion);
+        const int upscaler = TlgSettings::Get().upscaler;
+        if (reduced || game->info.size.width != w || game->info.size.height != h ||
+            (upscaler != TlgSettings::UpscalerDlss && upscaler != TlgSettings::UpscalerFsr3)) {
+            TlgSettings::Get().upscaler_wait = "motion vector size, or not DLSS/FSR 3.1";
+            return;
+        }
+    }
     if (!EnsureResources(w, h, ow, oh, true)) {
+        std::printf("Upscaler: resources for %ux%u -> %ux%u failed; upscaler stopped\n", w, h, ow, oh);
         failed = true;
         return;
     }
@@ -1027,7 +1102,21 @@ void TemporalUpscaler::Run() {
                     vk::AccessFlagBits2::eShaderRead);
     runtime.Transit(&color, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eComputeShader,
                     vk::AccessFlagBits2::eShaderRead);
+    if (game) {
+        runtime.Transit(game, vk::ImageLayout::eGeneral, vk::PipelineStageFlagBits2::eComputeShader,
+                        vk::AccessFlagBits2::eShaderRead);
+    }
     runtime.FlushBarriers();
+    const vk::ImageView game_motion_view =
+        game ? CachedView(*game, vk::Format::eR16G16Sfloat, vk::ImageAspectFlagBits::eColor)
+             : vk::ImageView{};
+    std::array<float, 2> mv_scale{1.0f, 1.0f};
+    if (game) {
+        const int mode = TlgSettings::Get().game_motion_mode;
+        const float* s = TlgSettings::GameMotionScale[mode];
+        mv_scale = TlgSettings::GameMotionPixels[mode] ? std::array<float, 2>{s[0], s[1]}
+                                                       : std::array<float, 2>{s[0] * w, s[1] * h};
+    }
     vk::Image input_color = color.GetImage(), input_depth = depth.GetImage();
     vk::ImageView input_color_view = color_view, input_depth_view = depth_view;
     if (reduced) {
@@ -1068,10 +1157,14 @@ void TemporalUpscaler::Run() {
     own_barrier(vk::Image(output_image), vk::ImageLayout::eUndefined, all,
                 vk::AccessFlagBits2::eNone, vk::ImageLayout::eGeneral, all, rw);
 
-    camera_motion.RecordMotion(cmdbuf, input_depth_view, *motion_view, w, h);
+    if (!game) {
+        camera_motion.RecordMotion(cmdbuf, input_depth_view, *motion_view, w, h);
+    }
     own_barrier(vk::Image(motion_image), vk::ImageLayout::eGeneral,
                 vk::PipelineStageFlagBits2::eComputeShader, vk::AccessFlagBits2::eShaderWrite,
                 vk::ImageLayout::eGeneral, all, vk::AccessFlagBits2::eShaderRead);
+    const vk::Image motion_input = game ? game->GetImage() : vk::Image(motion_image);
+    const vk::ImageView motion_input_view = game ? game_motion_view : *motion_view;
 
     const bool has_reactive = mask_ready || RecordReactive(input_color_view);
 
@@ -1090,11 +1183,13 @@ void TemporalUpscaler::Run() {
         dispatched = RecordFsr4(cmdbuf, {input_color, input_color_view, w, h},
                                 {input_depth, input_depth_view, w, h}, w, h, ow, oh, frame_ms);
     } else if (UseDlss()) {
+        const Dlss::Resource motion{motion_input, motion_input_view, vk::Format::eR16G16Sfloat,
+                                    vk::ImageAspectFlagBits::eColor, w, h};
         dispatched = RecordDlss(
             cmdbuf,
             {input_color, input_color_view, color.info.pixel_format, vk::ImageAspectFlagBits::eColor, w, h},
             {input_depth, input_depth_view, depth_format, vk::ImageAspectFlagBits::eDepth, w, h}, w, h,
-            ow, oh, frame_ms, true);
+            ow, oh, frame_ms, true, &motion, mv_scale);
     } else {
         FfxVkPortableUpscaleDispatchInfo info{};
         info.structSize = sizeof(info);
@@ -1105,7 +1200,7 @@ void TemporalUpscaler::Run() {
         info.depth = Describe(input_depth, depth_format, w, h, depth.usage_flags,
                               vk::ImageAspectFlagBits::eDepth,
                               FFX_VK_PORTABLE_RESOURCE_STATE_GENERIC_READ);
-        info.motionVectors = Describe(vk::Image(motion_image), vk::Format::eR16G16Sfloat, w, h,
+        info.motionVectors = Describe(motion_input, vk::Format::eR16G16Sfloat, w, h,
                                       vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled,
                                       vk::ImageAspectFlagBits::eColor,
                                       FFX_VK_PORTABLE_RESOURCE_STATE_GENERIC_READ);
@@ -1128,7 +1223,7 @@ void TemporalUpscaler::Run() {
         // Toggle 1 << 26 (tests): the opposite sign convention for FSR.
         const float sign = TlgToggle::Disabled(1u << 26) ? -1.0f : 1.0f;
         info.jitterOffset = {sign * jitter[0], sign * jitter[1]};
-        info.motionVectorScale = {1.0f, 1.0f};
+        info.motionVectorScale = {mv_scale[0], mv_scale[1]};
         info.renderSize = {w, h};
         info.outputSize = {ow, oh};
         info.frameTimeMilliseconds = frame_ms;
@@ -1167,6 +1262,17 @@ void TemporalUpscaler::Run() {
     if (dispatched) {
         reset = false;
         dispatched_last_frame = true;
+        // F8 (game motion vectors, testing): this frame's inputs and the upscaled output.
+        if (TlgSettings::Get().upscaler_dump.exchange(false)) {
+            DumpImages(instance, scheduler, cmdbuf, 0,
+                       {{input_color, w, h, 8, "color", "rgba16f"},
+                        {motion_input, w, h, 4, "motion", "rg16f"},
+                        {vk::Image(output_image), ow, oh, 8, "output", "rgba16f"}});
+            DumpImages(instance, scheduler, cmdbuf, 0,
+                       {{input_depth, w, h, 4, "depth", "f32", vk::ImageAspectFlagBits::eDepth}});
+            std::printf("Upscaler: dumped color, motion, depth and output (MV mode %d)\n",
+                        TlgSettings::Get().game_motion_mode + 1);
+        }
         if (TlgSettings::Get().upscaler != TlgSettings::UpscalerTaa) {
             ExtraSharpen(cmdbuf, vk::Image(output_image), false, ow, oh);
         }
@@ -1988,7 +2094,8 @@ bool TemporalUpscaler::UseDlss() const {
 
 bool TemporalUpscaler::RecordDlss(vk::CommandBuffer cmdbuf, const Dlss::Resource& color,
                                   const Dlss::Resource& depth, u32 w, u32 h, u32 ow, u32 oh,
-                                  float frame_ms, bool hdr) {
+                                  float frame_ms, bool hdr, const Dlss::Resource* motion,
+                                  std::array<float, 2> mv_scale) {
     Dlss* dlss = Dlss::Get();
     const Dlss::FeatureDesc desc{w, h, ow, oh, Dlss::QualityForScale(float(ow) / float(w)), hdr};
     bool ok = true;
@@ -2006,8 +2113,10 @@ bool TemporalUpscaler::RecordDlss(vk::CommandBuffer cmdbuf, const Dlss::Resource
         ok = dlss->Evaluate(cmdbuf, {
             .color = color,
             .depth = depth,
-            .motion = {vk::Image(motion_image), *motion_view, vk::Format::eR16G16Sfloat,
-                       vk::ImageAspectFlagBits::eColor, w, h},
+            .motion = motion ? *motion
+                             : Dlss::Resource{vk::Image(motion_image), *motion_view,
+                                              vk::Format::eR16G16Sfloat,
+                                              vk::ImageAspectFlagBits::eColor, w, h},
             .output = {vk::Image(output_image), *output_view, vk::Format::eR16G16B16A16Sfloat,
                        vk::ImageAspectFlagBits::eColor, ow, oh},
             .jitter_x = sign * jitter[0],
@@ -2015,6 +2124,8 @@ bool TemporalUpscaler::RecordDlss(vk::CommandBuffer cmdbuf, const Dlss::Resource
             .reset = reset,
             .frame_ms = frame_ms,
             .sharpness = settings.sharpen ? std::min(settings.sharpness.load(), 1.0f) : 0.0f,
+            .mv_scale_x = mv_scale[0],
+            .mv_scale_y = mv_scale[1],
         });
     }
     if (!ok) {

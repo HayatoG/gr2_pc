@@ -229,7 +229,8 @@ bool Dlss::Evaluate(vk::CommandBuffer command, const Frame& frame) {
     };
     const TlgDlssEvaluate parameters{image(frame.color),  image(frame.depth), image(frame.motion),
                                     image(frame.output), frame.jitter_x,     frame.jitter_y,
-                                    frame.reset ? 1 : 0, frame.frame_ms,     frame.sharpness};
+                                    frame.reset ? 1 : 0, frame.frame_ms,     frame.sharpness,
+                                    frame.mv_scale_x,    frame.mv_scale_y};
     return impl->api->Evaluate(command, &parameters) != 0;
 }
 
