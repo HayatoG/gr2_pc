@@ -166,13 +166,14 @@ private:
             // and sleep only after a longer pause (between frames).
             u64 available = published.load(std::memory_order_acquire);
             if (available == at) {
-                // With few hardware threads (Steam Deck: 8) a long spin takes time from the
-                // game's own threads. TLG_PIPE_SPIN_US overrides.
+                // With few cores (Steam Deck: 8 threads) a long spin takes time from the
+                // game's own threads; TLG_PHYS_CORES=1 counts physical cores instead of SMT
+                // threads here. TLG_PIPE_SPIN_US overrides.
                 static const auto spin_time = std::chrono::microseconds([] {
                     if (const char* env = std::getenv("TLG_PIPE_SPIN_US")) {
                         return std::max(0, std::atoi(env));
                     }
-                    return TlgThreads::Available() >= 12 ? 200 : 50;
+                    return TlgThreads::SizingCount() >= 12 ? 200 : 50;
                 }());
                 const auto spin_until = std::chrono::steady_clock::now() + spin_time;
                 for (u32 spins = 1; available == at; ++spins) {
