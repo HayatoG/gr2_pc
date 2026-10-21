@@ -237,7 +237,12 @@ void LowerWave64BallotPass(IR::Program& program, const RuntimeInfo& runtime_info
                 ir.IAdd(ir.Imm32(scratch_base), ir.ShiftLeftLogical(subgroup_id, ir.Imm32(2u)));
             ir.WriteShared(32, mask_low, offset);
             ir.Barrier();
-            const IR::U64 mask = IR::U64{ir.LoadShared(64, false, offset)};
+            // tlg: both 32-lane halves read their wave's pair of slots (bits 0..31 from the even
+            // subgroup, 32..63 from the odd one); the odd half used to read its own slot and the
+            // next wave's, so its lanes counted against the wrong mask (and the last subgroup
+            // read past the scratch).
+            const IR::U64 mask =
+                IR::U64{ir.LoadShared(64, false, ir.BitwiseAnd(offset, ir.Imm32(~7u)))};
             ir.Barrier();
             inst->ReplaceUsesWithAndRemove(mask);
         } else if (inst->GetOpcode() == IR::Opcode::ReadLane) {

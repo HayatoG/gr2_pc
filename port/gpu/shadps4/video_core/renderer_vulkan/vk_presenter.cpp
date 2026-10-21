@@ -28,6 +28,8 @@
 #include <chrono>
 #include <cmath>
 #include <csetjmp>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -45,6 +47,21 @@
 #endif
 
 namespace Vulkan {
+
+/// tlg: TLG_PRESENT_SKIP_CLEAR=0 clears the whole swapchain image before the blit again, and
+/// filters the blit linearly, as before. Default on: the clear only runs when the blit leaves
+/// part of the swapchain image untouched (letterbox bars). Backport of infamous_pc 028f31c.
+static bool SkipPresentClear() {
+    static const bool skip = [] {
+        const char* env = std::getenv("TLG_PRESENT_SKIP_CLEAR");
+        const bool on = !(env && env[0] == '0');
+        if (!on) {
+            std::printf("GPU: present clears the whole swapchain image (TLG_PRESENT_SKIP_CLEAR=0)\n");
+        }
+        return on;
+    }();
+    return skip;
+}
 
 bool CanBlitToSwapchain(const vk::PhysicalDevice physical_device, vk::Format format) {
     const vk::FormatProperties props{physical_device.getFormatProperties(format)};
@@ -117,14 +134,6 @@ static vk::Rect2D FitImage(s32 frame_width, s32 frame_height, s32 swapchain_widt
     const s32 offset_y = (swapchain_height - dst_height) / 2;
 
     return vk::Rect2D{{offset_x, offset_y}, {dst_width, dst_height}};
-}
-
-[[nodiscard]] vk::ImageBlit MakeImageBlitFit(s32 frame_width, s32 frame_height, s32 swapchain_width,
-                                             s32 swapchain_height) {
-    const auto& dst_rect = FitImage(frame_width, frame_height, swapchain_width, swapchain_height);
-
-    return MakeImageBlit(frame_width, frame_height, dst_rect.extent.width, dst_rect.extent.height,
-                         dst_rect.offset.x, dst_rect.offset.y);
 }
 
 // tlg: screenshot capture and ImGui overlays removed; the port presents directly.
@@ -750,21 +759,33 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
                 .subresourceRange = color_range,
             },
         };
+        // tlg: the fit rect covers the whole swapchain image when the window and the game share
+        // the aspect (the common case): the black clear then writes only pixels the blit
+        // overwrites, so it and its barrier are skipped. A blit that lands texel for texel is
+        // exact with nearest filtering (and cheaper) instead of linear.
+        const vk::Rect2D fit = FitImage(frame->width, frame->height, extent.width, extent.height);
+        const bool full = fit.offset.x == 0 && fit.offset.y == 0 &&
+                          fit.extent.width == extent.width && fit.extent.height == extent.height;
+        const bool one_to_one = fit.extent.width == u32(frame->width) &&
+                                fit.extent.height == u32(frame->height);
         cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
                                vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlagBits::eByRegion,
                                {}, {}, pre_barriers);
-        const vk::ClearColorValue black{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}};
-        cmdbuf.clearColorImage(swapchain_image, vk::ImageLayout::eTransferDstOptimal, black, color_range);
-        const vk::MemoryBarrier clear_done{
-            .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
-            .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
-        };
-        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer,
-                               vk::DependencyFlagBits::eByRegion, clear_done, {}, {});
+        if (!(full && SkipPresentClear())) {
+            const vk::ClearColorValue black{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}};
+            cmdbuf.clearColorImage(swapchain_image, vk::ImageLayout::eTransferDstOptimal, black, color_range);
+            const vk::MemoryBarrier clear_done{
+                .srcAccessMask = vk::AccessFlagBits::eTransferWrite,
+                .dstAccessMask = vk::AccessFlagBits::eTransferWrite,
+            };
+            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eTransfer,
+                                   vk::DependencyFlagBits::eByRegion, clear_done, {}, {});
+        }
         cmdbuf.blitImage(frame->image, vk::ImageLayout::eTransferSrcOptimal, swapchain_image,
                          vk::ImageLayout::eTransferDstOptimal,
-                         MakeImageBlitFit(frame->width, frame->height, extent.width, extent.height),
-                         vk::Filter::eLinear);
+                         MakeImageBlit(frame->width, frame->height, fit.extent.width,
+                                       fit.extent.height, fit.offset.x, fit.offset.y),
+                         one_to_one ? vk::Filter::eNearest : vk::Filter::eLinear);
         // tlg: the settings menu / FPS counter over the frame, at display resolution.
         const bool overlay = TlgOverlay::Visible();
         const std::array post_barriers{
@@ -826,11 +847,14 @@ void Presenter::Present(Frame* frame, bool is_reusing_frame, bool is_game_frame)
     scheduler.Flush(info);
 
     // Present to swapchain.
+    bool recreate = false;
     {
         std::scoped_lock submit_lock{Scheduler::submit_mutex};
-        if (!swapchain.Present() && window.GetWidth() != 0 && window.GetHeight() != 0) {
-            swapchain.Recreate(window.GetWidth(), window.GetHeight());
-        }
+        recreate = !swapchain.Present() && window.GetWidth() != 0 && window.GetHeight() != 0;
+    }
+    if (recreate) {
+        // Out of date: rebuild outside the present lock (Create takes the queue lock itself).
+        swapchain.Recreate(window.GetWidth(), window.GetHeight());
     }
 
     free_frame();
