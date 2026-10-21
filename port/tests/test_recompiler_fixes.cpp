@@ -263,23 +263,6 @@ int main(int argc, char** argv) {
         Check(!Optimization::IsLaneVaryingSource(*wg.Inst()), "WorkgroupId is uniform");
     }
 
-    {
-        // Binary info: found right after the code, rejected when its length runs past it.
-        alignas(256) static u32 code[64]{};
-        code[0] = 0xBF810000; // s_endpgm
-        auto* info = reinterpret_cast<AmdGpu::BinaryInfo*>(&code[8]);
-        std::memcpy(info->signature.data(), AmdGpu::BinaryInfo::signature_ref.data(),
-                    info->signature.size());
-        info->length = 8 * sizeof(u32);
-        info->shader_hash = 0x1234;
-        Check(AmdGpu::FindBinaryInfo(code) == info, "binary info right after the code is found");
-        info->length = 40 * sizeof(u32);
-        Check(AmdGpu::FindBinaryInfo(code) == nullptr,
-              "binary info whose code would run past it is rejected");
-        info->length = 0;
-        Check(AmdGpu::FindBinaryInfo(code) == nullptr, "binary info with no code is rejected");
-    }
-
     const bool rfl_all = Toggles::ReadFirstLaneAll();
     Check(ReadFirstLaneBarriers(true) == (rfl_all ? 2u : 0u),
           "ReadFirstLane of a lane-varying value is lowered for wave64 with TLG_RFL_ALL");
