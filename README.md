@@ -11,6 +11,10 @@
 
 <p align="center"><a href="https://github.com/HayatoG/gr2_pc/actions/workflows/build.yml"><img src="https://github.com/HayatoG/gr2_pc/actions/workflows/build.yml/badge.svg" alt="Build"></a></p>
 
+<p align="center"><a href="https://youtu.be/F5sD_HCGCWo"><img src="docs/screenshots/video-tutorial.jpg" width="640" alt="Como portar jogos de PS4 — vídeo no YouTube"></a></p>
+
+<p align="center">▶️ <a href="https://youtu.be/F5sD_HCGCWo"><b>Vídeo tutorial:</b> como portar jogos de PS4 para o PC</a></p>
+
 **Gravity Rush 2** (PS4, CUSA03694, update 01.11) rodando no PC com imagem, som e controle, a 30 FPS estáveis e sem emulador de CPU. O código original do jogo roda nativo no processador. O sistema do PS4 é reimplementado, e a GPU é traduzida para Vulkan. Usa o mesmo núcleo do port de [The Last Guardian](https://github.com/HayatoG/tlg_pc), também da Japan Studio.
 
 > **Nenhum arquivo do jogo vem com este projeto.** Para jogar, você precisa da sua própria cópia, tirada do seu PS4.
