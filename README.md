@@ -9,6 +9,8 @@
   <a href="https://discord.gg/UMkdMYZh9g">Discord</a>
 </p>
 
+<p align="center"><a href="https://github.com/sponsors/HayatoG"><img src="https://img.shields.io/badge/Sponsor-HayatoG-ea4aaa?logo=githubsponsors&logoColor=white" alt="Sponsor HayatoG on GitHub"></a></p>
+
 <p align="center"><a href="https://github.com/HayatoG/gr2_pc/actions/workflows/build.yml"><img src="https://github.com/HayatoG/gr2_pc/actions/workflows/build.yml/badge.svg" alt="Build"></a></p>
 
 **Gravity Rush 2** (PS4, CUSA03694, update 01.11) rodando no PC com imagem, som e controle, a 30 FPS estáveis e sem emulador de CPU. O código original do jogo roda nativo no processador. O sistema do PS4 é reimplementado, e a GPU é traduzida para Vulkan. Usa o mesmo núcleo do port de [The Last Guardian](https://github.com/HayatoG/tlg_pc), também da Japan Studio.
