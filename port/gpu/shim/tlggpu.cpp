@@ -10,6 +10,8 @@
 #include "tlg_toggles.h"
 #include "tlg_freeze.h"
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <atomic>
 #include <condition_variable>
 #include <boost/asio/io_context.hpp>
@@ -226,6 +228,27 @@ extern "C" int tlggpu_init(const TlgGpuConfig* config) {
             const int pref = settings.backport_pref[i].load();
             if (pref >= 0) {
                 Common::Backports::ApplyConfig(static_cast<std::size_t>(i), pref != 0);
+            }
+        }
+        // gr2: the A/B switches of the menu (wqm, lds_*, lane_divergence, rfl_all, block1d) are
+        // read from TLG_<NAME> once, when first used; GR2 has no launcher table for them yet, so
+        // the tlg.ini choice becomes that variable here unless the environment already sets it.
+        for (int e = 0; e < TlgSettings::kExtraPrefs; ++e) {
+            const int pref = settings.extra_pref[e].load();
+            if (pref < 0) {
+                continue;
+            }
+            std::string name = "TLG_";
+            for (const char* c = TlgSettings::kExtraKeys[e]; *c; ++c) {
+                name += static_cast<char>(std::toupper(static_cast<unsigned char>(*c)));
+            }
+            const char* current = std::getenv(name.c_str());
+            if (!(current && *current)) {
+#ifdef _WIN32
+                _putenv_s(name.c_str(), pref ? "1" : "0");
+#else
+                setenv(name.c_str(), pref ? "1" : "0", 1);
+#endif
             }
         }
     }

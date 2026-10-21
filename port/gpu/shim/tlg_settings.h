@@ -32,8 +32,7 @@ inline constexpr int OutputDefault = 1; ///< 1920x1080, the game's own size
 inline constexpr int kBackportPrefs = 32;
 /// A/B switches read once at start (recompiler_toggles.h, device creation); tlg.ini keys.
 inline constexpr const char* kExtraKeys[] = {"wqm", "lds_small", "lds_multi", "lds_readlane",
-                                             "lane_divergence", "rfl_all", "block1d", "bc_tiny",
-                                             "no_msaa"};
+                                             "lane_divergence", "rfl_all", "block1d"};
 inline constexpr int kExtraPrefs = sizeof(kExtraKeys) / sizeof(kExtraKeys[0]);
 
 struct Values {

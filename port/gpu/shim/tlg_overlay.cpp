@@ -475,8 +475,6 @@ void FixesSection() {
         {"LANE_DIVERGENCE", Shader::Toggles::LaneDivergence},
         {"RFL_ALL", Shader::Toggles::ReadFirstLaneAll},
         {"BLOCK1D", nullptr},
-        {"BC_TINY", nullptr},
-        {"NO_MSAA", nullptr},
     };
     static_assert(sizeof(extras) / sizeof(extras[0]) == TlgSettings::kExtraPrefs);
     if (BeginRows("##extras")) {
