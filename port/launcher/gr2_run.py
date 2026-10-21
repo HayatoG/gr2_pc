@@ -405,6 +405,55 @@ def new_log():
     return log
 
 
+def desktop_env():
+    """Environment for the programs the launcher opens for the player (browser, file manager).
+    The frozen launcher runs with PyInstaller's LD_LIBRARY_PATH (its _internal folder); a browser
+    started with it loads the launcher's libraries instead of the system's and dies silently."""
+    env = os.environ.copy()
+    if os.name != 'nt' and FROZEN:
+        original = env.pop('LD_LIBRARY_PATH_ORIG', None)
+        if original:
+            env['LD_LIBRARY_PATH'] = original
+        else:
+            env.pop('LD_LIBRARY_PATH', None)
+    return env
+
+
+def open_external(target):
+    """Opens a URL or a local path with the system's handler, detached from the launcher.
+    Returns True when a handler was started."""
+    target = str(target)
+    try:
+        if os.name == 'nt':
+            os.startfile(target)  # noqa: S606 (the player's own link or folder)
+            return True
+        opener = 'open' if sys.platform == 'darwin' else 'xdg-open'
+        subprocess.Popen([opener, target], env=desktop_env(), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return True
+    except OSError:
+        try:
+            import webbrowser
+            return bool(webbrowser.open(target))
+        except Exception:
+            return False
+
+
+def raise_open_file_limit():
+    """Linux: lifts the open-file limit to its hard maximum; the game inherits it. A desktop session
+    starts programs with a soft limit of 1024 (systemd DefaultLimitNOFILESoft), which a game that
+    opens many pipelines or files at once can run past."""
+    if os.name == 'nt':
+        return
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if hard != resource.RLIM_INFINITY and soft < hard:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+    except (ImportError, OSError, ValueError):
+        pass
+
+
 def launch(settings, seconds=0, extra_env=None):
     """Writes the in-game settings, starts the game; returns (process, log path).
     The process's combined output is a text pipe; the caller copies it to the log."""
@@ -420,6 +469,7 @@ def launch(settings, seconds=0, extra_env=None):
            '--patches', str(OUT_DIR / 'patches.bin'), '--timeout', str(int(seconds))]
     if ISA_TABLE.is_file():
         cmd += ['--isa-rewrite', str(ISA_TABLE)]
+    raise_open_file_limit()
     process = subprocess.Popen(cmd, cwd=str(USER_DIR), env=build_env(settings, extra_env),
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                encoding='utf-8', errors='replace', bufsize=1)
