@@ -5,7 +5,8 @@ import os
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import (Property, QAbstractListModel, QModelIndex, QObject, Qt, QUrl, Signal, Slot)
+from PySide6.QtCore import (Property, QAbstractListModel, QCoreApplication, QModelIndex, QObject, Qt, QTimer, QUrl,
+                            Signal, Slot)
 
 from . import logic
 from .saves import Saves
@@ -13,6 +14,10 @@ from .support import Support
 from .updates import Updates
 from .logic import backports_table, tlg_run
 import advanced_table  # noqa: E402
+import logtail  # noqa: E402
+
+CLOSE_DELAY_MS = 2000     # 'Close the launcher when the game starts': wait after the start
+LOG_LINES = 2000          # lines of the game log kept for the Home screen panel
 
 URLS = {'channel': 'https://www.youtube.com/@hayatog-dev', 'discord': 'https://discord.gg/UMkdMYZh9g',
         'sponsor': 'https://github.com/sponsors/HayatoG'}
@@ -178,6 +183,7 @@ class Backend(QObject):
     gpuFound = Signal(object)
     lineReceived = Signal(str)
     finished = Signal(int)
+    gameStarted = Signal(str)       # log path, from the game thread once the process runs
     message = Signal(str)
     guideChanged = Signal()
     scrollRequested = Signal(int)   # used by the screenshot tool
@@ -195,6 +201,7 @@ class Backend(QObject):
         self._pad = None
         self._chips, self._ready = [], False
         self._play_state = 'idle'
+        self._jobs = None        # no shader-list step in this port (kept for qt/updates.py)
         self._log = []
         self._news = []
         self._save = None
@@ -207,6 +214,11 @@ class Backend(QObject):
         self.gpuFound.connect(self._on_gpu)
         self.lineReceived.connect(self._on_line)
         self.finished.connect(self._on_finished)
+        self.gameStarted.connect(self._on_game_started)
+        self._tail = None        # logtail.LogTail of the running game's log
+        self._tail_timer = QTimer(self)
+        self._tail_timer.setInterval(1000)
+        self._tail_timer.timeout.connect(self._poll_log)
         self.refresh()
         self.saves = Saves(self, self.probes.get('saves'))
         self.support = Support(self, self.probes.get('support'))
@@ -395,12 +407,13 @@ class Backend(QObject):
 
     @Slot(str)
     def openUrl(self, name):
-        import webbrowser
-        webbrowser.open(URLS[name])
+        tlg_run.open_external(URLS[name])
 
     # -- play (same path as the Tk launcher: prepare() then launch()) -------------------------------
     @Slot()
     def play(self):
+        if self.updates.busy:
+            return
         if self._play_state != 'idle' or not self._ready:
             return
         tlg_run.save_settings(self.settings)
@@ -416,7 +429,7 @@ class Backend(QObject):
     def _run_game(self):
         try:
             tlg_run.prepare(self.settings, log=lambda line: self.lineReceived.emit(line))
-            self.process, log = tlg_run.launch(self.settings)
+            self.process, log = tlg_run.launch(self.settings, detached=True)
         except tlg_run.GameError as error:
             self.lineReceived.emit(self.t_(error.key, detail=error.detail))
             self.finished.emit(-1000)
@@ -428,22 +441,51 @@ class Backend(QObject):
         self.lineReceived.emit(f"{self.t_('running')} {log}")
         self._play_state = 'running'
         self.stateChanged.emit()
-        with open(log, 'w', encoding='utf-8') as out:
-            for line in self.process.stdout:
-                out.write(line)
-                out.flush()
-                self.lineReceived.emit(line.rstrip('\n'))
-        code = self.process.wait()
+        self.gameStarted.emit(str(log))
+        code = self.process.wait()   # the game writes its own log file; here only the exit code
         self.process = None
         self.finished.emit(code)
 
+    def _on_game_started(self, log):
+        """Main thread: follow the log file once a second and, if asked, close the launcher."""
+        self._tail = logtail.LogTail(log, LOG_LINES)
+        self._tail_timer.start()
+        if self.settings.get('close_on_play', True) and not self.probes.get('no_close'):
+            QTimer.singleShot(CLOSE_DELAY_MS, self._quit_app)
+
+    def _quit_app(self):
+        """Closes the launcher; the game keeps running (its own session). With reopen_launcher on,
+        a window-less watcher (--reopen-after PID) opens the launcher again when the game exits."""
+        process = self.process
+        if self.settings.get('reopen_launcher', True) and process is not None and process.poll() is None:
+            tlg_run.reopen_after(process.pid)
+        app = QCoreApplication.instance()
+        if app is None:
+            return
+        for window in getattr(app, 'topLevelWindows', lambda: [])():   # gone at once, even if the exit is slow
+            window.hide()
+        app.quit()
+
+    def _poll_log(self, final=False):
+        """Reads the bytes the game appended; the panel is rebuilt once per tick, never per line."""
+        if self._tail is None:
+            return
+        new = self._tail.poll(final=final)
+        if new:
+            self._log.extend(new)
+            del self._log[:-LOG_LINES]
+            self.logChanged.emit()
+
     def _on_line(self, line):
         self._log.append(line)
-        del self._log[:-2000]
+        del self._log[:-LOG_LINES]
         self.logChanged.emit()
 
     def _on_finished(self, code):
         self._play_state = 'idle'
+        self._tail_timer.stop()
+        self._poll_log(final=True)
+        self._tail = None
         if code == -1000:
             pass
         else:
@@ -452,8 +494,8 @@ class Backend(QObject):
         self.refresh()
 
     def shutdown(self):
-        if self.process:
-            self.process.terminate()
+        # The game is an independent process (its own session): closing the launcher does not close it.
+        self._tail_timer.stop()
 
     # -- fixes ----------------------------------------------------------------------------------
     @Property(QObject, constant=True)
@@ -483,9 +525,8 @@ class Backend(QObject):
 
     @Slot()
     def openModsFolder(self):
-        from PySide6.QtGui import QDesktopServices
         tlg_run.mods_dir().mkdir(parents=True, exist_ok=True)
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(tlg_run.mods_dir())))
+        tlg_run.open_external(tlg_run.mods_dir())
 
     @Property(str, notify=profileChanged)
     def advancedText(self):
@@ -530,24 +571,6 @@ class Backend(QObject):
     @Property(bool, notify=profileChanged)
     def anyShaderChange(self):
         return any(self.fix_states.get(i.id) is not None and i.shader for i in logic.fix_items())
-
-    def _occlusion_item(self):
-        return next(i for i in backports_table.ITEMS if i.key == 'occlusion_mode')
-
-    @Property('QVariantList', notify=profileChanged)
-    def occlusionOptions(self):
-        """The four values of the "Light glare (occlusion)" selector on the Home screen."""
-        item = self._occlusion_item()
-        value = backports_table.effective(item, self.fix_states)
-        return [{'value': v, 'label': self.t_.pair((en, pt)), 'on': v == value} for v, en, pt in item.choices]
-
-    @Property(int, notify=profileChanged)
-    def occlusionIndex(self):
-        return next((n for n, o in enumerate(self.occlusionOptions) if o['on']), 0)
-
-    @Slot(str)
-    def setOcclusion(self, value):
-        self.setFix(self._occlusion_item().id, value)
 
     # -- game language (voice and text; the interface language above is separate) ---------------
     @Property('QVariantList', notify=langChanged)
@@ -643,15 +666,13 @@ class Backend(QObject):
 
     @Slot()
     def openGuidesFolder(self):
-        from PySide6.QtGui import QDesktopServices
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.probes.get('guide_dir') or logic.GUIDE_DIR)))
+        tlg_run.open_external(self.probes.get('guide_dir') or logic.GUIDE_DIR)
 
     @Slot()
     def openReadme(self):
-        from PySide6.QtGui import QDesktopServices
         readme = tlg_run.REPO_DIR / 'README.md'
         if readme.is_file():
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(readme)))
+            tlg_run.open_external(readme)
 
     @Slot(str, str)
     def setFix(self, item_id, value):

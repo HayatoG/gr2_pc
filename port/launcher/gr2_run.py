@@ -20,6 +20,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 
 import shader_cache
 
@@ -165,6 +166,8 @@ DEFAULT_SETTINGS = {
     'vram_budget_mb': 5600,
     'native_audio': True,
     'stick_deadzone': 10,           # percent; runtime_pad.c GR2_STICK_DEADZONE (Qt Controls page)
+    'close_on_play': True,          # Qt launcher: close about 2 s after the game starts
+    'reopen_launcher': True,        # launcher closed on play: opens again when the game exits
 }
 
 
@@ -489,6 +492,12 @@ def build_env(settings, extra=None):
     # Shaders and pipelines beside the saves (the GPU reads it when it starts; before, Linux used
     # shadPS4's ~/.local/share/shadPS4 and Windows <saves>/user).
     env['TLG_GPU_USER_DIR'] = str(gpu_user_dir())
+    # The env-only switches of the "Experimental fixes" table the player changed (GR2_X; probe.c
+    # copies each to the TLG_X the GPU core reads). One already in the environment wins.
+    try:
+        env.update(backports_table.environment(experimental_states(settings), os.environ))
+    except Exception:   # a malformed tlg.ini must never stop the game from starting
+        pass
     if extra:
         env.update(extra)
     return env
@@ -509,9 +518,111 @@ def new_log():
     return log
 
 
-def launch(settings, seconds=0, extra_env=None):
+def desktop_env():
+    """Environment for the programs the launcher opens for the player (browser, file manager, the
+    reopen watcher). The frozen launcher runs with PyInstaller's LD_LIBRARY_PATH (its _internal
+    folder); a browser started with it loads the launcher's libraries and dies silently."""
+    env = os.environ.copy()
+    if os.name != 'nt' and FROZEN:
+        original = env.pop('LD_LIBRARY_PATH_ORIG', None)
+        if original:
+            env['LD_LIBRARY_PATH'] = original
+        else:
+            env.pop('LD_LIBRARY_PATH', None)
+    return env
+
+
+def open_external(target):
+    """Opens a URL or a local path with the system's handler, detached from the launcher.
+    Returns True when a handler was started."""
+    target = str(target)
+    try:
+        if os.name == 'nt':
+            os.startfile(target)  # noqa: S606 (the player's own link or folder)
+            return True
+        opener = 'open' if sys.platform == 'darwin' else 'xdg-open'
+        subprocess.Popen([opener, target], env=desktop_env(), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return True
+    except OSError:
+        try:
+            import webbrowser
+            return bool(webbrowser.open(target))
+        except Exception:
+            return False
+
+
+def detach_options():
+    """Popen options that make the game an independent process: closing the launcher (or its
+    terminal) does not reach it. Linux: its own session. Windows: its own process group and no
+    console at all (stdout/stderr go to the log file, so nothing needs one)."""
+    if os.name == 'nt':
+        return {'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS}
+    return {'start_new_session': True}
+
+
+def wait_for_exit(pid):
+    """Blocks until process pid ends (no window, no Qt: a closed launcher's watcher)."""
+    if os.name == 'nt':
+        import ctypes
+        kernel = ctypes.windll.kernel32
+        handle = kernel.OpenProcess(0x00100000, False, int(pid))   # SYNCHRONIZE
+        if handle:
+            kernel.WaitForSingleObject(handle, 0xFFFFFFFF)
+            kernel.CloseHandle(handle)
+        return
+    while True:
+        try:
+            os.kill(int(pid), 0)
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            pass
+        try:   # a zombie (exited, not yet reaped) counts as ended
+            if Path(f'/proc/{int(pid)}/stat').read_text().split(') ', 1)[1][:1] == 'Z':
+                return
+        except (OSError, IndexError):
+            pass
+        time.sleep(1.0)
+
+
+def reopen_after(pid):
+    """Starts a detached watcher that opens the Qt launcher again once the game (pid) exits."""
+    if FROZEN:
+        cmd = [sys.executable, '--reopen-after', str(pid)]
+    else:
+        cmd = [sys.executable, str(Path(__file__).resolve().parent / 'gr2_launcher_qt.py'),
+               '--reopen-after', str(pid)]
+    try:
+        subprocess.Popen(cmd, env=desktop_env(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, **detach_options())
+        return True
+    except OSError:
+        return False
+
+
+def raise_open_file_limit():
+    """Linux: lifts the open-file limit to its hard maximum; the game inherits it. A desktop session
+    starts programs with a soft limit of 1024 (systemd DefaultLimitNOFILESoft), and the GPU core can
+    go past it while it loads the pipelines: SDL then fails to create the window's buffer file
+    ("Too many open files") and the game crashes before its window opens."""
+    if os.name == 'nt':
+        return
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if hard != resource.RLIM_INFINITY and soft < hard:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+    except (ImportError, OSError, ValueError):
+        pass
+
+
+def launch(settings, seconds=0, extra_env=None, detached=False):
     """Writes the in-game settings, starts the game; returns (process, log path).
-    The process's combined output is a text pipe; the caller copies it to the log."""
+    detached=False: the process's combined output is a text pipe; the caller copies it to the log
+    (Tk launcher, --play). detached=True (Qt launcher): the game writes stdout and stderr straight
+    into the log file and runs in its own session, so the launcher may close (close_on_play)
+    while it plays; the caller follows the file with logtail.LogTail and wait()s for the exit."""
     USER_DIR.mkdir(parents=True, exist_ok=True)
     update_ini(USER_DIR / 'tlg.ini', {
         'display_mode': str(settings['display_mode']).lower(),  # the game's keys: windowed|borderless|fullscreen
@@ -524,6 +635,13 @@ def launch(settings, seconds=0, extra_env=None):
            '--patches', str(OUT_DIR / 'patches.bin'), '--timeout', str(int(seconds))]
     if ISA_TABLE.is_file():
         cmd += ['--isa-rewrite', str(ISA_TABLE)]
+    raise_open_file_limit()
+    if detached:
+        with open(log, 'wb') as out:   # the child keeps its own copy of the descriptor
+            process = subprocess.Popen(cmd, cwd=str(USER_DIR), env=build_env(settings, extra_env),
+                                       stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                       **detach_options())
+        return process, log
     process = subprocess.Popen(cmd, cwd=str(USER_DIR), env=build_env(settings, extra_env),
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                encoding='utf-8', errors='replace', bufsize=1)

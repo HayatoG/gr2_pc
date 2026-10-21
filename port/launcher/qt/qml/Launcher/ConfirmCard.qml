@@ -4,7 +4,8 @@ import Launcher
 // Confirmation overlay driven by Saves.dialog ({open, title, body, lines, buttons:[{id,label,tone}]}).
 Rectangle {
     id: root
-    property var d: Saves.dialog
+    property var target: Saves
+    property var d: target.dialog
     visible: !!d.open
     color: Qt.rgba(0, 0, 0, 0.62)
     MouseArea { anchors.fill: parent }   // blocks clicks behind the card
@@ -39,7 +40,7 @@ Rectangle {
                 width: parent.width; spacing: 10; topPadding: 6
                 Repeater {
                     model: d.buttons || []
-                    GhostButton { text: modelData.label; tone: modelData.tone; onClicked: Saves.answer(modelData.id) }
+                    GhostButton { text: modelData.label; tone: modelData.tone; onClicked: root.target.answer(modelData.id) }
                 }
             }
         }

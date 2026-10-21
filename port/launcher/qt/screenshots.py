@@ -12,13 +12,14 @@ from pathlib import Path
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 os.environ.setdefault('QT_QUICK_BACKEND', 'software')
 os.environ.setdefault('QT_QUICK_CONTROLS_STYLE', 'Basic')
-sandbox = Path(tempfile.mkdtemp(prefix='iss-qt-shots-'))
+sandbox = Path(tempfile.mkdtemp(prefix='gr2-qt-shots-'))
 os.environ['XDG_CONFIG_HOME'] = str(sandbox)   # the settings file of the demo, not the player's
 os.environ['GR2_QT_REDUCED_MOTION'] = '1'      # the play button's pulse stays still
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import gr2_run as tlg_run  # noqa: E402
 tlg_run.PORT_DIR = sandbox / 'port'            # portable mode points inside the sandbox, never at real saves
+tlg_run.USER_DIR = sandbox / 'port' / 'user'   # tlg.ini and saves of the demo, never the player's
 from qt import logic  # noqa: E402
 from qt.app import App  # noqa: E402
 from qt.backend import Backend  # noqa: E402
@@ -80,7 +81,7 @@ def demo_logs():
     for n, (name, fps) in enumerate((('run-20261013-211500.log', 58.2), ('run-20261014-184022.log', 43.7),
                                      ('run-20261015-093110.log', 60.0))):
         text = ('Build: 3f2a9c1d8e41 (built Oct 13 2026 09:12:44); game CUSA03694 01.07; threads inherit the creator\'s MXCSR/x87 control\n'
-                'Config: window=Windowed vsync=1 vram_budget=3500\n  BP01=1 BP02=1 BP09=0\n  user=C:\\Users\\Maria Silva\\Documents\\GravityRush2-PC\n'
+                'Config: window=Windowed vsync=1 vram_budget=3500\n  user=C:\\Users\\Maria Silva\\Documents\\GravityRush2-PC\n'
                 'Settings: /home/maria/GravityRush2-PC/user/tlg.ini\nGPU: using AMD Radeon RX 580 Series\n')
         text += ''.join(f'Frame stats: {fps + d:.1f} FPS, worst frame {17 + 9 * k:.1f} ms (vblank 60 Hz); 0 shader compiles\n'
                         for k, d in enumerate((0.4, -0.3, 0.2, -1.5)))
@@ -110,7 +111,7 @@ def demo_backend(with_art=False, saves_dir=None, pt=True):
               'save': lambda: 'Welcome to Seattle — 8%', 'version': lambda: 'v2026.10.15',
               'save_fixes': lambda s, st: None}
     probes['saves'] = {'running': lambda: False, 'scan': lambda: [
-        {'path': '/home/demo/Downloads/infamous-windows-x86_64/infamous-windows-x86_64/user', 'saves': 3,
+        {'path': '/home/demo/Downloads/gr2-windows-x86_64/gr2-windows-x86_64/user', 'saves': 3,
          'newest': 1_791_000_000.0}]}
     probes['support'] = {'info': demo_info, 'logs_dir': lambda: sandbox / 'logs', 'names': lambda: {'maria'}, 'os_key': lambda: 'windows',
                          'clipboard': lambda text: None, 'open_url': lambda url: None}
@@ -135,7 +136,7 @@ def saves_shots(app, backend, out):
         shutil.rmtree(documents, ignore_errors=True)
         demo_saves(documents, pt)
         userdata.set_user_dir(documents)
-        savemanager.set_prefs(keep=10, extra='/mnt/disco2/backup-infamous')
+        savemanager.set_prefs(keep=10, extra='/mnt/disco2/backup-gr2')
         for i in range(3):   # a few backups with different dates
             pass
         shutil.rmtree(documents / 'savedata_backups', ignore_errors=True)
@@ -291,12 +292,12 @@ def main(out):
         app.go(index)
         app.grab(out / f'{prefix}{name}.png')
     if not prefix:
-        backend.setFix('BP06', '1')           # one change: profile becomes custom
+        backend.setFix('TLG_STALE_READBACK', '1')           # one change: profile becomes custom
         app.go(3)
         app.grab(out / 'correcoes-personalizado.png')
         backend.scrollRequested.emit(2400)
         app.grab(out / 'correcoes-fim.png')
-        backend.setFix('BP06', '0')
+        backend.setFix('TLG_STALE_READBACK', '0')
         backend.setLang('en_US')
         for index, name in ((0, 'home-en'), (3, 'fixes-en')):
             app.go(index)

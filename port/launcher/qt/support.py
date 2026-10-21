@@ -5,7 +5,6 @@ holds the wizard state and turns results into texts. Nothing leaves the PC unles
 clicks: copy (clipboard), save .zip (a file the player picks) or open the issue page (browser)."""
 import datetime
 import threading
-import webbrowser
 from pathlib import Path
 
 from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
@@ -320,7 +319,7 @@ class Support(QObject):
         if 'open_url' in self.probes:
             self.probes['open_url'](url)
         else:
-            webbrowser.open(url)
+            tlg_run.open_external(url)
 
     @Slot(str)
     def openLink(self, name):
@@ -334,8 +333,7 @@ class Support(QObject):
             self.probes['open_dir'](folder)
             return
         folder.mkdir(parents=True, exist_ok=True)
-        from PySide6.QtGui import QDesktopServices
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        tlg_run.open_external(folder)
 
     @Slot()
     def refreshLogs(self):

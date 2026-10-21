@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls.Basic
 import Launcher
+import QtQuick.Dialogs
 
 Item {
     id: page
@@ -72,6 +73,13 @@ Item {
                 }
             }
             NoteBar { text: Theme.tr("gfx_preset_note"); bar: page.accent }
+            Row {
+                spacing: 10
+                GhostButton { compact: true; text: Theme.tr("ps_export"); onClicked: { nameField.text = Graphics.exportName; whatField.text = ""; exportCard.visible = true } }
+                GhostButton { compact: true; text: Theme.tr("ps_import"); onClicked: openJson.open() }
+            }
+            NoteBar { visible: Graphics.shareMessage !== ""; text: Graphics.shareMessage
+                      bar: Graphics.shareTone === "good" ? Theme.ok : Theme.bad; textColor: Theme.textSoft }
 
             // ---- the options ------------------------------------------------------------------
             Column {
@@ -112,5 +120,65 @@ Item {
                 }
             }
         }
+    }
+
+    ConfirmCard { anchors.fill: parent; target: Graphics }
+
+    // ---- export: name and description, then the file dialog ----------------------------------------------
+    Rectangle {
+        id: exportCard
+        anchors.fill: parent; visible: false
+        color: Qt.rgba(0, 0, 0, 0.62)
+        MouseArea { anchors.fill: parent }
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(600, parent.width - 72); height: exportCol.implicitHeight + 48
+            radius: 14; color: Theme.card; border.width: 1; border.color: Theme.ghostLineHover
+            Column {
+                id: exportCol
+                x: 24; y: 24; width: parent.width - 48; spacing: 12
+                Text { width: parent.width; text: Theme.tr("ps_export_title"); color: "#fff"; wrapMode: Text.WordWrap
+                       font.family: Theme.fontDisplay; font.variableAxes: ({ "wght": 800 }); font.pixelSize: 28; font.weight: Font.ExtraBold
+                       font.capitalization: Font.AllUppercase; font.letterSpacing: 1.4 }
+                Text { width: parent.width; text: Theme.tr("ps_export_hint"); color: Theme.textSoft; wrapMode: Text.WordWrap
+                       font.family: Theme.fontText; font.pixelSize: 14; lineHeight: 1.35; lineHeightMode: Text.ProportionalHeight }
+                Text { text: Theme.tr("ps_name"); color: Theme.textDim; font.family: Theme.fontText; font.pixelSize: 13 }
+                TextField {
+                    id: nameField
+                    width: parent.width; color: "#fff"; selectByMouse: true; maximumLength: 80
+                    selectionColor: page.accent; selectedTextColor: "#00131a"
+                    font.family: Theme.fontText; font.pixelSize: 14; leftPadding: 12; rightPadding: 12; topPadding: 9; bottomPadding: 9
+                    background: Rectangle { radius: 8; color: Theme.chip; border.width: 1; border.color: nameField.activeFocus ? page.accent : Theme.ghostLine }
+                }
+                Text { text: Theme.tr("ps_what"); color: Theme.textDim; font.family: Theme.fontText; font.pixelSize: 13 }
+                TextField {
+                    id: whatField
+                    width: parent.width; color: "#fff"; selectByMouse: true; maximumLength: 300
+                    selectionColor: page.accent; selectedTextColor: "#00131a"
+                    font.family: Theme.fontText; font.pixelSize: 14; leftPadding: 12; rightPadding: 12; topPadding: 9; bottomPadding: 9
+                    background: Rectangle { radius: 8; color: Theme.chip; border.width: 1; border.color: whatField.activeFocus ? page.accent : Theme.ghostLine }
+                }
+                Flow {
+                    width: parent.width; spacing: 10; topPadding: 6
+                    GhostButton { tone: "primary"; text: Theme.tr("ps_choose_file")
+                                  onClicked: { exportCard.visible = false; saveJson.currentFile = saveJson.currentFolder + "/" + Graphics.exportFile; saveJson.open() } }
+                    GhostButton { text: Theme.tr("ps_cancel"); onClicked: exportCard.visible = false }
+                }
+            }
+        }
+    }
+    FileDialog {
+        id: openJson
+        title: Theme.tr("ps_open_title")
+        nameFilters: [Theme.tr("ps_filter"), "*"]
+        onAccepted: Graphics.importPreset(selectedFile.toString())
+    }
+    FileDialog {
+        id: saveJson
+        title: Theme.tr("ps_save_title")
+        fileMode: FileDialog.SaveFile
+        defaultSuffix: "json"
+        nameFilters: [Theme.tr("ps_filter")]
+        onAccepted: Graphics.exportPreset(nameField.text, whatField.text, selectedFile.toString())
     }
 }

@@ -159,22 +159,6 @@ Item {
                 width: parent.width; spacing: 10
                 Repeater { model: Backend.chips; Chip { text: modelData.text; level: modelData.level } }
             }
-            Column {   // light glare (occlusion): same file/env path as the other switches
-                width: parent.width; spacing: 6
-                Row {
-                    spacing: 12
-                    Text { text: Theme.tr("occlusion"); color: Theme.textMuted; font.family: Theme.fontText; font.pixelSize: 13; font.weight: Font.Bold
-                           anchors.verticalCenter: parent.verticalCenter }
-                    Select {
-                        accent: page.accent; width: 262
-                        model: Backend.occlusionOptions
-                        currentIndex: Backend.occlusionIndex
-                        onActivated: (i) => Backend.setOcclusion(Backend.occlusionOptions[i].value)
-                    }
-                }
-                Text { width: parent.width; text: Theme.tr("occlusion_hint"); wrapMode: Text.WordWrap; color: Theme.textDim
-                       font.family: Theme.fontText; font.pixelSize: 12; lineHeight: 1.25; lineHeightMode: Text.ProportionalHeight }
-            }
             Item {
                 visible: Backend.showFirstRun || Backend.notice !== ""
                 width: parent.width; height: warnText.implicitHeight

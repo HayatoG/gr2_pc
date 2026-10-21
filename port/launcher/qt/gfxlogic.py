@@ -12,17 +12,17 @@ from pathlib import Path
 
 import backports_table
 from presets_current import CURRENT
-from presets_amd import AMD
 
 # ------------------------------------------------------------------------------------- presets
 # Keys a preset sets (anything a preset does not list goes back to the default of the table).
 PRESET_SETTINGS = ('vsync',)
 PRESET_ITEMS = ('menu:fps_limit', 'menu:frames_queued', 'menu:fsr1', 'menu:rcas', 'menu:rcas_strength',
                 'TLG_ASYNC_SHADERS', 'TLG_STALE_READBACK', 'TLG_DEFERRED_READBACK', 'TLG_BACKGROUND_WARMUP')
-# No GR2-specific *tuned* (CURRENT/AMD) preset is cataloged yet (presets_current.py/presets_amd.py
-# are valid-but-empty placeholders): only the four plain, shared-core-only presets below are real.
-FULL_PRESETS = {CURRENT['id']: CURRENT, AMD['id']: AMD}
-SETTING_DEFAULTS = {'vsync': True, 'gpu_readbacks': '2', 'eager_readback': False, 'write_merge': True}
+# No GR2-specific tuned full preset is cataloged yet (presets_current.py is a valid-but-empty
+# placeholder and is not offered): the four plain presets below only use options this port reads,
+# and "balanced" is the Recommended one. Imported files (preset_share.py) apply as full presets.
+FULL_PRESETS = {CURRENT['id']: CURRENT}
+SETTING_DEFAULTS = {'vsync': True}
 # id, settings overrides, item overrides (values as strings; unlisted = default)
 PRESETS = (
     ('performance', {'vsync': False}, {'menu:frames_queued': '2', 'menu:fsr1': '1', 'TLG_STALE_READBACK': '1'}),
@@ -46,11 +46,36 @@ def preset_targets(preset_id):
     for item_id in PRESET_ITEMS:
         stored[item_id] = backports_table.normalize(item_by_id(item_id), items.get(item_id))
     if preset_id in FULL_PRESETS:      # only a full preset owns the extra keys
-        for key, value in overrides.items():
-            settings[key] = value
-        for item_id, value in items.items():
-            stored[item_id] = backports_table.normalize(item_by_id(item_id), value)
+        return _full_targets(overrides, items)
     return settings, stored
+
+
+def _full_targets(overrides, items):
+    """Targets of a full preset: the plain keys plus every key the preset lists."""
+    settings = {'vsync': overrides.get('vsync', True)}
+    stored = {item_id: backports_table.normalize(item_by_id(item_id), items.get(item_id))
+              for item_id in PRESET_ITEMS}
+    settings.update(overrides)
+    for item_id, value in items.items():
+        stored[item_id] = backports_table.normalize(item_by_id(item_id), value)
+    return settings, stored
+
+
+def custom_targets(preset):
+    """The targets of a preset that is not in PRESETS (an imported file, see preset_share.py): it is
+    applied as a full preset. `preset` has the layout of presets_current.CURRENT."""
+    return _full_targets(preset.get('settings', {}), preset.get('items', {}))
+
+
+def apply_targets(settings, states, targets):
+    """Puts the targets of a preset into the launcher settings and the fix states (in place); the
+    caller saves them (Backend._save_fixes in Qt, tlg_run.save_experimental in Tk)."""
+    settings.update(targets[0])
+    states.update(targets[1])
+
+
+def same_setting(key, current, wanted):
+    return _same_setting(key, current, wanted)
 
 
 def _same_setting(key, current, wanted):

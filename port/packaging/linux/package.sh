@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Builds dist/tlg-linux-x86_64.tar.gz after `bash build.sh`: "$PORT_NAME" (the launcher,
-# frozen with PyInstaller so players need no Python or Tk), out/tlg-probe with libtlggpu.so, the
+# Builds dist/$PORT_SLUG-linux-x86_64.tar.gz after `bash build.sh`: "$PORT_NAME" (the Qt Quick launcher)
+# and "$PORT_NAME (classic)" (the Tk launcher), both frozen with PyInstaller so players need no
+# Python, Qt or Tk, out/tlg-probe with libtlggpu.so, the
 # libraries they need that a desktop may lack (out/lib: SDL3, FFmpeg, Zydis, fmt, ...), the
 # preparation scripts and the player README. No game or console file may ship.
 set -euo pipefail
@@ -13,17 +14,19 @@ python=${PYTHON:-python3}
 if [[ ! -x out/pyenv/bin/python ]]; then
     "$python" -m venv out/pyenv
 fi
-out/pyenv/bin/python -m pip install -q --disable-pip-version-check pyinstaller iced-x86==1.21.0
+out/pyenv/bin/python -m pip install -q --disable-pip-version-check pyinstaller iced-x86==1.21.0 "$PORT_QT_PACKAGE"
 # The scripts run inside the executable (--script): the standard modules they import come along,
 # and iced-x86 for scripts/isa_rewrite.py (CPUs without MOVBE/BMI1/LZCNT/SSE4A).
 hidden=()
 for module in argparse base64 collections hashlib json re shutil struct tempfile xml.etree.ElementTree \
               urllib.request runpy iced_x86; do
-    hidden+=(--hidden-import "$module")
+    hidden+=("$module")
 done
-out/pyenv/bin/python -m PyInstaller --noconfirm --clean --log-level WARN --windowed \
-    --name "$PORT_NAME" --distpath out/pyi-dist --workpath out/pyi-work --specpath out/pyi-work \
-    --paths "$PWD/scripts" --paths "$PWD/launcher" "${hidden[@]}" launcher/$PORT_LAUNCHER
+# packaging/launcher.spec freezes both launchers into one folder (shared libraries) and trims Qt.
+ISS_SPEC_NAME=$PORT_NAME ISS_SPEC_ROOT=$PWD ISS_SPEC_QT=$PORT_LAUNCHER ISS_SPEC_TK=$PORT_LAUNCHER_CLASSIC \
+ISS_SPEC_HIDDEN="${hidden[*]}" \
+    out/pyenv/bin/python -m PyInstaller --noconfirm --clean --log-level WARN \
+    --distpath out/pyi-dist --workpath out/pyi-work packaging/launcher.spec
 
 dest=out/stage/$name
 rm -rf -- out/stage
@@ -46,6 +49,8 @@ done
 cp -r scripts "$dest/"
 find "$dest" -name __pycache__ -prune -exec rm -r {} +
 cp LICENSE packaging/README-player.md "$dest/"
+# The release name (vYYYY.MM.DD-<commit>, as the CI publishes it): the launcher shows it and compares it with the latest release.
+if [[ -n ${GITHUB_SHA:-} ]]; then printf 'v%s-%s\n' "$(date -u +%Y.%m.%d)" "${GITHUB_SHA::7}" > "$dest/VERSION"; fi
 cp packaging/linux/install_desktop.sh packaging/port.env "$dest/"
 cat > "$dest/system_lib/LEIA-ME.txt" <<'TXT'
 Coloque aqui o libSceNgs2.sprx do firmware do seu PS4 (/system/common/lib) para ter som.

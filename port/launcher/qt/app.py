@@ -89,11 +89,11 @@ class App:
 
     def __init__(self, backend=None, argv=None):
         self.qt = QGuiApplication.instance() or QGuiApplication(argv or sys.argv)
-        self.qt.setApplicationName('infamous-launcher')
-        self.qt.setDesktopFileName('infamous-pc')
+        self.qt.setApplicationName('gr2-launcher')
+        self.qt.setDesktopFileName('gr2-pc')
         self.backend = backend or Backend()
         self.backend.fonts = load_fonts()
-        icon = HERE.parent / 'infamous.png'
+        icon = HERE.parent / 'gr2.png'
         if icon.is_file():
             self.qt.setWindowIcon(QIcon(str(icon)))
         self.graphics = Graphics(self.backend, self.backend.probes.get('graphics'))

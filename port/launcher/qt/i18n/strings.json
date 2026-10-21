@@ -91,22 +91,6 @@
     "en": "30 FPS like the PS4, no FSR or sharpening, nothing deferred. The image the console showed.",
     "pt": "30 FPS como no PS4, sem FSR nem nitidez, nada adiado. A imagem que o console mostrava."
   },
-  "gfx_preset_current": {
-    "en": "CURRENTLY RECOMMENDED",
-    "pt": "RECOMENDADA ATUALMENTE"
-  },
-  "gfx_preset_current_what": {
-    "en": "The maintainer's own setup: exact GPU reads (Precise), read-ahead off, FSR 1 on, shorter draw distance with sharper textures, and the driver pipeline cache. Changes GPU accuracy too.",
-    "pt": "A configuração do próprio autor: leituras exatas da GPU (Preciso), leitura adiantada desligada, FSR 1 ligado, alcance de visão menor com texturas mais nítidas e o cache de pipelines do driver. Também muda a precisão da GPU."
-  },
-  "gfx_preset_amd": {
-    "en": "AMD CARDS (RECOMMENDED)",
-    "pt": "PLACAS AMD (RECOMENDADA)"
-  },
-  "gfx_preset_amd_what": {
-    "en": "The recommended setup with the safest choices for AMD cards: maximal reconvergence and the driver pipeline cache off, the 1D-image workarounds on. Does not fix the RX 580 crash, which has no known fix.",
-    "pt": "A configuração recomendada com as escolhas mais seguras para placas AMD: reconvergência máxima e cache de pipelines do driver desligados, contornos de imagem 1D ligados. Não corrige o crash da RX 580, que ainda não tem correção conhecida."
-  },
   "gfx_preset_standard": {
     "en": "default",
     "pt": "padrão"
@@ -120,8 +104,8 @@
     "pt": "Predefinição atual: personalizada (você mudou algo abaixo)"
   },
   "gfx_preset_note": {
-    "en": "A preset only changes the options listed below that it needs; the window mode, the VRAM budget, GPU accuracy and the overlay stay as you set them (only \"Currently recommended\" and \"AMD cards\" also set GPU accuracy).",
-    "pt": "Uma predefinição só mexe nas opções abaixo de que precisa; o modo de janela, o orçamento de VRAM, a precisão da GPU e o overlay ficam como você deixou (só a \"Recomendada atualmente\" e a \"Placas AMD\" também definem a precisão da GPU)."
+    "en": "A preset only changes the options listed below that it needs; the window mode, the VRAM budget and the overlay stay as you set them. \"Balanced\" is the recommended one.",
+    "pt": "Uma predefinição só mexe nas opções abaixo de que precisa; o modo de janela, o orçamento de VRAM e o overlay ficam como você deixou. \"Equilibrado\" é a recomendada."
   },
   "gfx_sec_image": {
     "en": "Window and image",
@@ -130,10 +114,6 @@
   "gfx_sec_rate": {
     "en": "Frame rate",
     "pt": "Taxa de quadros"
-  },
-  "gfx_sec_view": {
-    "en": "Draw distance and detail",
-    "pt": "Distância de visão e detalhe"
   },
   "gfx_sec_gpu": {
     "en": "GPU and shaders",
@@ -162,18 +142,6 @@
   "gfx_what_show_fps": {
     "en": "Shows the performance overlay when the game starts (F10 toggles it in the game).",
     "pt": "Mostra o overlay de desempenho ao abrir o jogo (F10 liga e desliga lá dentro)."
-  },
-  "gfx_what_gpu_readbacks": {
-    "en": "How exactly the GPU results the game reads back are copied. Precise is needed for GPU particles (smoke); Fast skips them.",
-    "pt": "Quão exatos são os resultados da GPU que o jogo lê de volta. Preciso é necessário para as partículas da GPU (fumaça); Rápido as pula."
-  },
-  "gfx_what_eager_readback": {
-    "en": "Copies GPU results the game reads back at each fence, ahead of time.",
-    "pt": "Copia, a cada fence, os resultados da GPU que o jogo vai ler, antes de ele pedir."
-  },
-  "gfx_what_write_merge": {
-    "en": "The game's writes into GPU memory no longer wait for the GPU.",
-    "pt": "As escritas do jogo na memória da GPU deixam de esperar a GPU."
   },
   "gfx_what_vram_budget_mb": {
     "en": "How much video memory the texture cache may use. Never set it above your card's VRAM.",
@@ -1675,8 +1643,280 @@
     "en": "No cheat XML files found in the mods folder yet.",
     "pt": "Nenhum arquivo de cheat XML encontrado na pasta de mods ainda."
   },
-  "occlusion_hint": {
-    "en": "Diagnostic for a light glow that shows through geometry and flickers. 3 (default) is recommended; change it only if asked to test another mode.",
-    "pt": "Diagnóstico de brilho de luz que atravessa a geometria e pisca. 3 (padrão) é o recomendado; mude só se pedirem para testar outro modo."
+  "close_on_play": {
+    "en": "Close the launcher when the game starts",
+    "pt": "Fechar o launcher ao abrir o jogo"
+  },
+  "reopen_launcher": {
+    "en": "Open the launcher again when the game closes",
+    "pt": "Abrir o launcher de novo ao fechar o jogo"
+  },
+  "gfx_what_reopen_launcher": {
+    "en": "With the launcher closed on play, it comes back when you quit the game. Nothing stays open while you play: a small waiting process only.",
+    "pt": "Com o launcher fechado ao jogar, ele volta quando você sai do jogo. Nada fica aberto enquanto você joga: só um pequeno processo esperando."
+  },
+  "gfx_what_close_on_play": {
+    "en": "The launcher closes about 2 seconds after the game starts. The game keeps running on its own either way; with the launcher open you can follow its log.",
+    "pt": "O launcher fecha cerca de 2 segundos depois que o jogo abre. O jogo continua rodando sozinho de qualquer jeito; com o launcher aberto você acompanha o log."
+  },
+  "upd_install": {
+    "en": "Download and install",
+    "pt": "Baixar e instalar"
+  },
+  "upd_source_hint": {
+    "en": "This copy runs from the source code (git): update it with \"git pull\" and build.sh. Download and install is only in the packaged version.",
+    "pt": "Esta cópia roda do código-fonte (git): atualize com \"git pull\" e o build.sh. Baixar e instalar só existe na versão em pacote."
+  },
+  "upd_cancel": {
+    "en": "Cancel",
+    "pt": "Cancelar"
+  },
+  "upd_later": {
+    "en": "Later",
+    "pt": "Depois"
+  },
+  "upd_download_now": {
+    "en": "Download",
+    "pt": "Baixar"
+  },
+  "upd_install_now": {
+    "en": "Install",
+    "pt": "Instalar"
+  },
+  "upd_restart_now": {
+    "en": "Restart now",
+    "pt": "Reiniciar agora"
+  },
+  "upd_restart": {
+    "en": "Open the new version",
+    "pt": "Abrir a versão nova"
+  },
+  "upd_ask_download_title": {
+    "en": "Download the update?",
+    "pt": "Baixar a atualização?"
+  },
+  "upd_ask_download": {
+    "en": "Version {tag} ({size}) will be downloaded from the project's GitHub releases. Nothing is installed before you confirm again.",
+    "pt": "A versão {tag} ({size}) será baixada das releases do projeto no GitHub. Nada é instalado antes de você confirmar de novo."
+  },
+  "upd_ask_where": {
+    "en": "New folder: {folder}",
+    "pt": "Pasta nova: {folder}"
+  },
+  "upd_ask_old": {
+    "en": "This folder stays as it is, to go back: {folder}",
+    "pt": "Esta pasta fica como está, para voltar: {folder}"
+  },
+  "upd_ask_data_copy": {
+    "en": "Your saves and data ({folder}) are copied into the new folder; the originals are not touched.",
+    "pt": "Seus saves e dados ({folder}) são copiados para a pasta nova; os originais não são mexidos."
+  },
+  "upd_ask_data_kept": {
+    "en": "Your saves and data stay where they are ({folder}); the new version uses the same folder.",
+    "pt": "Seus saves e dados ficam onde estão ({folder}); a versão nova usa a mesma pasta."
+  },
+  "upd_ask_install_title": {
+    "en": "Install the update?",
+    "pt": "Instalar a atualização?"
+  },
+  "upd_ask_install_sha": {
+    "en": "{tag} was downloaded, its size and SHA-256 checksum match the release. Install it in {folder}?",
+    "pt": "A {tag} foi baixada; o tamanho e o checksum SHA-256 batem com a release. Instalar em {folder}?"
+  },
+  "upd_ask_install_size": {
+    "en": "{tag} was downloaded and its size matches the release (this release publishes no checksum file). Install it in {folder}?",
+    "pt": "A {tag} foi baixada e o tamanho bate com a release (esta release não publica arquivo de checksum). Instalar em {folder}?"
+  },
+  "upd_ask_restart_title": {
+    "en": "Update installed",
+    "pt": "Atualização instalada"
+  },
+  "upd_ask_restart": {
+    "en": "The new version is in {folder}. Restart the launcher into it now? To go back later, open the launcher in {old}.",
+    "pt": "A versão nova está em {folder}. Reiniciar o launcher nela agora? Para voltar depois, abra o launcher em {old}."
+  },
+  "upd_downloading": {
+    "en": "Downloading… {done} of {total} ({pct}%)",
+    "pt": "Baixando… {done} de {total} ({pct}%)"
+  },
+  "upd_installing": {
+    "en": "Installing in a new folder…",
+    "pt": "Instalando numa pasta nova…"
+  },
+  "upd_installed": {
+    "en": "Installed in {folder}. Open the new version when you want; this one stays to go back.",
+    "pt": "Instalada em {folder}. Abra a versão nova quando quiser; esta fica para voltar."
+  },
+  "upd_err_noasset": {
+    "en": "The latest release has no package for this system. Use \"Release page\".",
+    "pt": "A última release não tem pacote para este sistema. Use \"Página da release\"."
+  },
+  "upd_err_insecure": {
+    "en": "The download was refused: it did not stay on HTTPS. Nothing was installed.",
+    "pt": "O download foi recusado: ele não ficou em HTTPS. Nada foi instalado."
+  },
+  "upd_err_size": {
+    "en": "The downloaded file does not have the size the release announces. It was deleted; try again.",
+    "pt": "O arquivo baixado não tem o tamanho que a release informa. Ele foi apagado; tente de novo."
+  },
+  "upd_err_checksum": {
+    "en": "The downloaded file does not match the release's SHA-256 checksum. It was deleted and nothing was installed.",
+    "pt": "O arquivo baixado não bate com o checksum SHA-256 da release. Ele foi apagado e nada foi instalado."
+  },
+  "upd_err_space": {
+    "en": "Not enough free space next to this folder (about {detail} needed).",
+    "pt": "Não há espaço livre suficiente ao lado desta pasta (precisa de uns {detail})."
+  },
+  "upd_err_write": {
+    "en": "Could not write next to this folder ({detail}). Move the game to a folder you can write to, or use \"Release page\".",
+    "pt": "Não consegui gravar ao lado desta pasta ({detail}). Mova o jogo para uma pasta onde você pode gravar, ou use \"Página da release\"."
+  },
+  "upd_err_archive": {
+    "en": "The downloaded package is not what I expected ({detail}). Nothing was installed.",
+    "pt": "O pacote baixado não veio como eu esperava ({detail}). Nada foi instalado."
+  },
+  "upd_err_cancel": {
+    "en": "Download cancelled. Nothing was installed.",
+    "pt": "Download cancelado. Nada foi instalado."
+  },
+  "upd_err_launch": {
+    "en": "Could not start the new version ({detail}). Open it from its folder.",
+    "pt": "Não consegui abrir a versão nova ({detail}). Abra-a pela pasta dela."
+  },
+  "upd_intro_inplace": {
+    "en": "The launcher only looks for a new version when you ask (or on opening, if you turn that on). In the packaged version, \"Download and install\" downloads the release, checks it and replaces the launcher in this same folder after you confirm once. Your game, saves, settings and caches stay where they are.",
+    "pt": "O launcher só procura uma versão nova quando você pede (ou ao abrir, se você ligar). Na versão em pacote, \"Baixar e instalar\" baixa a release, confere o arquivo e substitui o launcher nesta mesma pasta depois de uma confirmação. Seu jogo, saves, configurações e caches continuam onde estão."
+  },
+  "upd_closing": {
+    "en": "Closing the launcher to install the update…",
+    "pt": "Fechando o launcher para instalar a atualização…"
+  },
+  "upd_confirm": {
+    "en": "Download {tag} ({size} MiB), verify it and restart to update in {folder}? Game files, saves, settings, mods and caches are kept. If the package is incompatible, installation stops.",
+    "pt": "Baixar {tag} ({size} MiB), verificar e reiniciar para atualizar em {folder}? Jogo, saves, configurações, mods e caches serão mantidos. Se o pacote for incompatível, a instalação será interrompida."
+  },
+  "upd_continue": {
+    "en": "Update and restart",
+    "pt": "Atualizar e reiniciar"
+  },
+  "upd_rollback": {
+    "en": "Restore previous version",
+    "pt": "Restaurar versão anterior"
+  },
+  "upd_rollback_confirm": {
+    "en": "Close this launcher and restore the previous port version? Your current saves and settings are kept.",
+    "pt": "Fechar este launcher e restaurar a versão anterior do port? Seus saves e configurações atuais serão mantidos."
+  },
+  "upd_preparing": {
+    "en": "Checking package and preparing recovery…",
+    "pt": "Verificando pacote e preparando recuperação…"
+  },
+  "upd_same_path_hint": {
+    "en": "Updates replace the port in {folder}. Personal files stay in their current folders.",
+    "pt": "Atualizações substituem o port em {folder}. Arquivos pessoais permanecem nas pastas atuais."
+  },
+  "upd_err_busy": {
+    "en": "Close the game, shader preparation and other launcher instances before updating.",
+    "pt": "Feche o jogo, a preparação de shaders e outras instâncias do launcher antes de atualizar."
+  },
+  "upd_err_protocol": {
+    "en": "This package does not support this updater. Use the release page for manual installation.",
+    "pt": "Este pacote não é compatível com este atualizador. Use a página da release para instalação manual."
+  },
+  "upd_err_unverified": {
+    "en": "This release has no published SHA-256. Use the release page for manual installation.",
+    "pt": "Esta release não tem SHA-256 publicado. Use a página da release para instalação manual."
+  },
+  "upd_err_conflict": {
+    "en": "A locally changed file conflicts with this update. {detail}",
+    "pt": "Um arquivo alterado localmente está em conflito com a atualização. {detail}"
+  },
+  "upd_err_recovery": {
+    "en": "Recovery needs attention. Keep the update folder and its backup. {detail}",
+    "pt": "A recuperação precisa de atenção. Preserve a pasta da atualização e seu backup. {detail}"
+  },
+  "upd_err_source": {
+    "en": "Binary updates cannot replace a source checkout.",
+    "pt": "Atualizações binárias não podem substituir um checkout do código-fonte."
+  },
+  "gfx_sec_game": {
+    "en": "Game",
+    "pt": "Jogo"
+  },
+  "gs_outline_off": {
+    "en": "Turn off the geometry-shader outline",
+    "pt": "Desligar o contorno do geometry shader"
+  },
+  "gfx_what_gs_outline_off": {
+    "en": "Fixes the black streaks near the characters (the comic outline pass is not translated correctly yet). On by default.",
+    "pt": "Corrige as linhas pretas perto dos personagens (a passada de contorno estilo HQ ainda não é traduzida corretamente). Ligado por padrão."
+  },
+  "native_audio": {
+    "en": "Native audio (libSceNgs2.sprx from your console)",
+    "pt": "Áudio nativo (libSceNgs2.sprx do seu console)"
+  },
+  "gfx_what_native_audio": {
+    "en": "Uses the console audio module when it is in system_lib; off, or without the file, the port's own experimental mixer plays the sound.",
+    "pt": "Usa o módulo de áudio do console quando ele está em system_lib; desligado, ou sem o arquivo, o mixer experimental do port toca o som."
+  },
+  "deadzone": {
+    "en": "Stick dead zone",
+    "pt": "Zona morta dos analógicos"
+  },
+  "deadzone_hint": {
+    "en": "Raise it if the character or camera moves on its own (stick drift).",
+    "pt": "Aumente se o personagem ou a câmera se mexer sozinho (drift)."
+  },
+  "sponsor": {
+    "en": "♥ Sponsor on GitHub",
+    "pt": "♥ Apoie no GitHub"
+  },
+  "exp_live": {
+    "en": "in game",
+    "pt": "no jogo"
+  },
+  "exp_restart": {
+    "en": "restarts the game",
+    "pt": "reinicia o jogo"
+  },
+  "exp_experimental": {
+    "en": "experimental",
+    "pt": "experimental"
+  },
+  "exp_broken": {
+    "en": "still crashes the game",
+    "pt": "ainda derruba o jogo"
+  },
+  "exp_source": {
+    "en": "source: {source}",
+    "pt": "origem: {source}"
+  },
+  "exp_default": {
+    "en": "default",
+    "pt": "padrão"
+  },
+  "exp_auto": {
+    "en": "Automatic",
+    "pt": "Automático"
+  },
+  "exp_on": {
+    "en": "On",
+    "pt": "Ligado"
+  },
+  "exp_off": {
+    "en": "Off",
+    "pt": "Desligado"
+  },
+  "exp_recommended": {
+    "en": "recommended",
+    "pt": "recomendado"
+  },
+  "exp_profile_rec": {
+    "en": "Profile: Recommended",
+    "pt": "Perfil: Recomendado"
+  },
+  "exp_profile_custom": {
+    "en": "Profile: custom ({n} changes)",
+    "pt": "Perfil: personalizado ({n} mudanças)"
   }
 }

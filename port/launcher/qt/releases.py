@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Release check, no Qt: version names, comparison, the notes in the player's language and the one
-HTTPS GET the Updates screen makes. The launcher never downloads or installs anything."""
+HTTPS GET the Updates screen makes. Downloading and installing a release is updater.py, and only
+when the player asks for it."""
 import json
 import re
 import socket
@@ -124,7 +125,8 @@ def user_agent(version=''):
 
 def fetch_latest(version='', opener=urllib.request.urlopen, url=API_URL, timeout=TIMEOUT):
     """The one request the launcher makes: GET the latest release. Sends no data of the player,
-    only the User-Agent that names the port. Returns {'tag','name','url','body','published'}.
+    only the User-Agent that names the port. Returns {'tag','name','url','body','published','assets'}
+    (assets: [{'name','url','size'}] of the files whose download URL is HTTPS on our own releases).
     Raises UpdateError with a kind the screen turns into a friendly message."""
     request = urllib.request.Request(url, headers={'User-Agent': user_agent(version),
                                                    'Accept': 'application/vnd.github+json'})
@@ -151,6 +153,14 @@ def fetch_latest(version='', opener=urllib.request.urlopen, url=API_URL, timeout
     except (ValueError, KeyError, TypeError, UnicodeDecodeError) as error:
         raise UpdateError('bad') from error
     page = str(data.get('html_url') or '')
+    assets = []
+    for asset in data.get('assets') or []:
+        if not isinstance(asset, dict):
+            continue
+        link = str(asset.get('browser_download_url') or '')
+        if link.startswith(RELEASE_PREFIX + 'download/') and isinstance(asset.get('size'), int):
+            assets.append({'name': str(asset.get('name') or ''), 'url': link, 'size': asset['size'],
+                           'digest': str(asset.get('digest') or '')})
     return {'tag': tag, 'name': str(data.get('name') or tag), 'body': str(data.get('body') or ''),
             'url': page if page.startswith(RELEASE_PREFIX) else RELEASES_URL,    # only our own releases page opens
-            'published': str(data.get('published_at') or '')[:10]}
+            'published': str(data.get('published_at') or '')[:10], 'assets': assets}

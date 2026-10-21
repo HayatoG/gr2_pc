@@ -213,7 +213,7 @@ class Saves(QObject):
         if 'open' in self.probes:
             self.probes['open'](path)
         else:
-            QUrl_open(path)
+            tlg_run.open_external(path)
 
     @Slot(str)
     def chooseDir(self, url):
@@ -474,8 +474,3 @@ class Saves(QObject):
     def dismissMessage(self):
         self._msg = ''
         self.changed.emit()
-
-
-def QUrl_open(path):
-    from PySide6.QtGui import QDesktopServices
-    QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))

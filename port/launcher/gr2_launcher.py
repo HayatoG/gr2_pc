@@ -13,7 +13,6 @@ import queue
 import subprocess
 import sys
 import threading
-import webbrowser
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -165,7 +164,7 @@ class Launcher:
             link = ttk.Label(credits, text=self.t(key), foreground='#2a6fdb', cursor='hand2',
                              font=('TkDefaultFont', 10, 'underline'))
             link.pack(anchor='e')
-            link.bind('<Button-1>', lambda _, u=url: webbrowser.open(u))
+            link.bind('<Button-1>', lambda _, u=url: tlg_run.open_external(u))
         self.status = ttk.Label(titles, text='', foreground='#555', wraplength=420, justify='left')
         self.status.pack(anchor='w', pady=(10, 0))
 

@@ -51,7 +51,7 @@ def run():
     check(len(list((here / 'qml' / 'Launcher').glob('*.qml'))) > 5, 'QML files missing')
     for font in ('Barlow-Regular.ttf', 'Barlow-Bold.ttf', 'BigShouldersStencilDisplay.ttf'):
         check((here / 'fonts' / font).is_file(), f'missing font: {font}')
-    check((here.parent / 'infamous.png').is_file(), 'missing window icon: infamous.png')
+    check((here.parent / 'gr2.png').is_file(), 'missing window icon: gr2.png')
     try:
         strings = logic.load_strings()
         for key, entry in strings.items():
