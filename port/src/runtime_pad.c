@@ -589,9 +589,20 @@ static uint32_t sample_mouse(PadData *d, const bool *k) {
 }
 /* The mouse finger (sample_mouse) into the pad data: touch (and click) of the left or middle
  * button, or the two fingers of the right one, which play_two_finger makes. */
+static uint64_t two_since;
 static void apply_mouse_touch(PadData *d) {
-    if (!mouse_pad.active) return;
-    if (mouse_pad.two_fingers) { d->buttons|=CLICK_LEFT|CLICK_RIGHT; return; }
+    if (!mouse_pad.active) { two_since=0; return; }
+    /* gr2: GR2 has no two-finger click of its own (iss_pc's play_two_finger), so the right
+     * button lays both fingers at the ends of the pad here and presses it CLICK_LEAD_US later. */
+    if (mouse_pad.two_fingers) {
+        if (!two_since) two_since=d->timestamp ? d->timestamp : 1;
+        d->touch_count=0;
+        d->touches[d->touch_count++]=(PadTouch){.x=120,.y=471,.id=20};
+        d->touches[d->touch_count++]=(PadTouch){.x=1800,.y=471,.id=21};
+        if (d->timestamp>=two_since+CLICK_LEAD_US) d->buttons|=BTN_TOUCHPAD;
+        return;
+    }
+    two_since=0;
     if (!mouse_pad.out.touch || d->touch_count>=2) return;
     d->touches[d->touch_count]=(PadTouch){.x=mouse_touch_unit(mouse_pad.out.x,MOUSE_TOUCH_W),
         .y=mouse_touch_unit(mouse_pad.out.y,MOUSE_TOUCH_H),.id=(uint8_t)mouse_pad.out.id};
