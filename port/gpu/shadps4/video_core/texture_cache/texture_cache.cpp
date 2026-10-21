@@ -1411,7 +1411,14 @@ void TextureCache::GarbageCollectImages() {
             return env ? std::strtoull(env, nullptr, 10) << 20 : 0;
         }();
         if (instance.IsIntegrated() || forced_budget) {
-            const u64 budget = forced_budget ? forced_budget : instance.GetDeviceMemoryBudgetNow();
+            // An integrated GPU keeps following the driver's current budget under a forced one:
+            // the launcher always forces 3500 MB, more than most integrated GPUs are given, and
+            // the collector then aimed above what the driver allowed (#72, #75, #199).
+            u64 budget = forced_budget;
+            if (instance.IsIntegrated()) {
+                const u64 now = instance.GetDeviceMemoryBudgetNow();
+                budget = budget && now ? std::min(budget, now) : (budget ? budget : now);
+            }
             if (budget != 0) {
                 trigger_gc_memory = budget / 10 * 7;
                 pressure_gc_memory = budget / 100 * 85;
