@@ -47,9 +47,11 @@ class OpenExternalTests(unittest.TestCase):
         wb.assert_called_once()
 
     def test_every_launcher_link_uses_it(self):
-        text = (ROOT / 'launcher' / 'gr2_launcher.py').read_text(encoding='utf-8')
-        self.assertNotIn('webbrowser.open(', text)
-        self.assertNotIn("'xdg-open'", text)
+        for name in ('qt/backend.py', 'qt/saves.py', 'qt/support.py', 'qt/updates.py',
+                     'gr2_launcher.py'):
+            text = (ROOT / 'launcher' / name).read_text(encoding='utf-8')
+            self.assertNotIn('webbrowser.open(', text, name)
+            self.assertNotIn('QDesktopServices.openUrl(', text, name)
 
 
 @unittest.skipIf(os.name == 'nt', 'Linux/macOS path')

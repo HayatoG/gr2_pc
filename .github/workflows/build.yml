@@ -60,6 +60,16 @@ jobs:
         run: TLG_LTO=OFF TLG_PGO=off bash build.sh
       - name: Package
         run: bash packaging/linux/package.sh
+      - name: Smoke test (frozen Qt launcher)
+        # Opens the packaged launcher offscreen and renders a frame: a package whose launcher cannot
+        # start (missing Qt plugin, QML, font, translation) must not become a release.
+        run: |
+          set -euo pipefail
+          smoke=$(mktemp -d)
+          tar -C "$smoke" -xzf dist/gr2-linux-x86_64.tar.gz
+          out=$(QT_QPA_PLATFORM=offscreen timeout 120 "$smoke/gr2-linux-x86_64/Gravity Rush 2" --selftest 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          grep -qx 'selftest ok' <<<"$out"
       - uses: actions/upload-artifact@v4
         with:
           name: gr2-linux-x86_64
@@ -110,6 +120,27 @@ jobs:
           export MSYS2_ROOT=$(cygpath -u "$MSYS2_ROOT")
           export WINPYTHON=$(cygpath -u "$WINPYTHON_WIN")
           bash packaging/windows/package.sh
+      - name: Smoke test (frozen Qt launcher)
+        # Unzips the package and runs the frozen launcher with --selftest (Qt offscreen platform).
+        # The windowed exe has no console, so it writes its result to a file that is checked here.
+        shell: pwsh
+        working-directory: port
+        run: |
+          $smoke = Join-Path $env:RUNNER_TEMP 'smoke'
+          Remove-Item -Recurse -Force $smoke -ErrorAction SilentlyContinue
+          Expand-Archive -Path dist/gr2-windows-x86_64.zip -DestinationPath $smoke
+          $exe = Join-Path $smoke 'gr2-windows-x86_64/Gravity Rush 2.exe'
+          $outFile = Join-Path $env:RUNNER_TEMP 'selftest.txt'
+          Remove-Item $outFile -ErrorAction SilentlyContinue
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $env:GR2_SELFTEST_OUT = $outFile
+          $p = Start-Process -FilePath $exe -ArgumentList '--selftest' -PassThru
+          if (-not $p.WaitForExit(180000)) { $p.Kill(); Write-Error 'selftest timed out'; exit 1 }
+          if (Test-Path $outFile) { Get-Content $outFile }
+          if ($p.ExitCode -ne 0 -or -not (Test-Path $outFile) -or -not ((Get-Content $outFile -Raw) -match 'selftest ok')) {
+            Write-Error "selftest failed (exit code $($p.ExitCode))"
+            exit 1
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: gr2-windows-x86_64
