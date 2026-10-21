@@ -226,7 +226,16 @@ void FrameCapture::BeginPass(const VideoCore::ImageInfo* const* colors, u32 num_
     display = display && targets.size() == 1;
     const bool new_pass = !(pass_open && !entries.empty() && !entries.back().compute &&
                             entries.back().colors == targets);
+    // Gravity Rush 2 writes its display buffers more than once a frame: a recording ends at a
+    // display pass only after two flips, so it always holds at least one whole frame.
+    static u64 recording_flips = 0;
     if (display && new_pass) {
+        if (state.load(std::memory_order_relaxed) == Recording &&
+            flips.load(std::memory_order_acquire) - recording_flips < 2) {
+            entries.push_back({.compute = false, .colors = targets, .note = "display pass"});
+            pass_open = true;
+            return;
+        }
         if (state.load(std::memory_order_relaxed) == Recording) {
             Write(last_presented.load(std::memory_order_relaxed));
             entries.clear();
@@ -239,6 +248,7 @@ void FrameCapture::BeginPass(const VideoCore::ImageInfo* const* colors, u32 num_
         pending_sampled.clear();
         pending_buffers.clear();
         pass_open = false;
+        recording_flips = flips.load(std::memory_order_acquire);
         state.store(Recording, std::memory_order_release);
     }
     if (state.load(std::memory_order_relaxed) != Recording) {
@@ -291,6 +301,10 @@ void FrameCapture::Buffer(u64 stage_hash, u32 slot, VAddr address, const void* d
     const u64 bytes = std::min<u64>(size, 1024) & ~u64(3);
     std::string out = std::format("  buffer stage {:016x} slot {} at {:#x} size {}:", stage_hash,
                                   slot, address, size);
+    if (!data) { // a binding at guest address 0 (seen in Gravity Rush 2): nothing to read
+        pending_buffers.push_back(out + " (null)");
+        return;
+    }
     const auto* words = static_cast<const float*>(data);
     for (u64 i = 0; i < bytes / 4; ++i) {
         if (i % 8 == 0) {
