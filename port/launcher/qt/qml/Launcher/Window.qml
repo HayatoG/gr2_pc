@@ -9,7 +9,7 @@ Window {
     width: 1120
     height: 756  // one more rail entry than inFAMOUS's Window.qml (Mods/Cheats)
     minimumWidth: 1000
-    minimumHeight: 696
+    minimumHeight: 600
     visible: true
     color: Theme.bg
     title: "Gravity Rush 2 — PC"

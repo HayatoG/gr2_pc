@@ -348,6 +348,25 @@ def sfo_game(game_dir, read_sfo):
     return str(values.get('TITLE_ID', '')), str(values.get('APP_VER', ''))
 
 
+def _git_version(folder):
+    """'v2026.10.20-cb614b1' (commit date and hash, '+dirty' with local changes) when `folder` is
+    inside a git checkout; '' otherwise (packages carry a VERSION file instead)."""
+    import subprocess
+    if not (Path(folder) / '.git').exists():
+        return ''
+    try:
+        run = lambda *a: subprocess.run(['git', '-C', str(folder), *a], capture_output=True, text=True,  # noqa: E731
+                                        timeout=3, stdin=subprocess.DEVNULL,
+                                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        head = run('log', '-1', '--format=%cd-%h', '--date=format:v%Y.%m.%d')
+        if head.returncode or not head.stdout.strip():
+            return ''
+        dirty = run('status', '--porcelain', '--untracked-files=no', '--ignore-submodules').stdout.strip()
+        return head.stdout.strip() + ('+dirty' if dirty else '')
+    except (OSError, subprocess.SubprocessError):
+        return ''
+
+
 def current_version(port_dirs, log_dir):
     """The release name from the VERSION file the package carries (vYYYY.MM.DD-<commit>); else the
     commit of the last log's "Build:" line; '' when neither exists."""
@@ -355,6 +374,10 @@ def current_version(port_dirs, log_dir):
         text = _read(Path(folder) / 'VERSION').strip()
         if text:
             return text.splitlines()[0].strip()
+    for folder in port_dirs:   # a git checkout: the commit it runs (vYYYY.MM.DD-<commit>[+dirty])
+        text = _git_version(folder)
+        if text:
+            return text
     for log in list_logs(log_dir)[:5]:
         head, _ = read_log(log, 256 * 1024)
         m = re.search(r'^Build:\s*([0-9a-f]{7,40})', head, re.M)

@@ -27,11 +27,13 @@ Rectangle {
                 id: slot
                 readonly property bool on: root.current === index
                 width: stage.width; height: stage.height
+                // Only the page coming in fades; the one going out disappears at once, so two pages
+                // never show through each other (a stalled fade left a ghost title behind Support).
                 opacity: on ? 1 : 0
-                visible: opacity > 0.01
+                visible: on
                 y: on ? 0 : 14
-                Behavior on opacity { enabled: root.animate; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-                Behavior on y { enabled: root.animate; NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+                Behavior on opacity { enabled: root.animate && slot.on; NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+                Behavior on y { enabled: root.animate && slot.on; NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
                 Loader {
                     anchors.fill: parent
                     sourceComponent: { var k = root.pages[index]
@@ -45,7 +47,7 @@ Rectangle {
             }
         }
     }
-    Component { id: home; HomePage { animate: root.animate; onOpenFixes: root.current = 3; onOpenSaves: root.current = 4 } }
+    Component { id: home; HomePage { animate: root.animate; onOpenFixes: root.current = root.pages.indexOf("fixes"); onOpenSaves: root.current = root.pages.indexOf("saves") } }
     Component { id: graphics; GraphicsPage { } }
     Component { id: controls
         ControlsPage { guidesShown: root.pages.indexOf("guides") >= 0
