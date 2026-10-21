@@ -163,7 +163,11 @@ static ABI int32_t ef_wait(EventFlag *ef,uint64_t pattern,uint32_t mode,uint64_t
 
 /* ---- Kernel queries ---- */
 /* Base PS4 (not Pro): 1080p output path and the 0xb0000000 GPU memory layout. */
-static ABI int32_t is_neo_mode(void) { return 0; }
+/* TLG_NEO=1 (GR2_NEO=1) reports a PS4 Pro, so a game with a Pro mode takes its own Pro render path. */
+static ABI int32_t is_neo_mode(void) {
+    const char *env = getenv("TLG_NEO");
+    return env && !strcmp(env, "1");
+}
 static ABI int32_t available_flexible_memory(uint64_t *size) {
     if (!size) return KERR_EINVAL;
     *size=UINT64_C(448)*1024*1024; return 0;

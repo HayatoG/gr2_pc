@@ -23,14 +23,15 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #endif
-/* sceKernelGetDirectMemorySize on retail PS4: 5056 MiB. TLG_DMEM_MB raises it (the resolution
- * patches above 1080p need about 4 GiB more; run.sh sets it). */
+/* sceKernelGetDirectMemorySize on retail PS4: 5056 MiB, 512 MiB more in PS4 Pro mode (TLG_NEO=1).
+ * TLG_DMEM_MB raises it (the resolution patches above 1080p need about 4 GiB more; run.sh sets it). */
 static uint64_t pool_size_bytes(void) {
     static uint64_t size;
     if (!size) {
-        const char *env = getenv("TLG_DMEM_MB");
+        const char *env = getenv("TLG_DMEM_MB"), *neo = getenv("TLG_NEO");
+        const uint64_t retail = neo && !strcmp(neo, "1") ? 5056 + 512 : 5056;
         uint64_t mb = env ? strtoull(env, NULL, 10) : 0;
-        if (mb < 5056 || mb > 16384) mb = 5056;
+        if (mb < retail || mb > 16384) mb = retail;
         size = mb * 1024 * 1024;
     }
     return size;
