@@ -282,9 +282,10 @@ void Scheduler::RecorderThread(std::stop_token stoken) {
     while (true) {
         // Spin briefly before sleeping: the next chunk usually follows within microseconds,
         // and a sleeping recorder costs the GPU thread a wake-up syscall per kick. With few
-        // hardware threads (Steam Deck: 8) the spin would take time from guest threads.
+        // cores (Steam Deck: 8 threads) the spin would take time from guest threads;
+        // TLG_PHYS_CORES=1 counts physical cores here.
         static const auto spin_time = std::chrono::microseconds(
-            TlgThreads::Available() >= 12 ? 200 : 20);
+            TlgThreads::SizingCount() >= 12 ? 200 : 20);
         const auto spin_until = std::chrono::steady_clock::now() + spin_time;
         for (u32 spins = 1; queued_chunks.load(std::memory_order_acquire) == 0; ++spins) {
             __builtin_ia32_pause();

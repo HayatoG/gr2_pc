@@ -900,6 +900,15 @@ public:
 
     static std::mutex submit_mutex;
 
+    /// tlg: the graphics queue lock for a host call that synchronizes the device or its queues
+    /// outside a submission or a present (vkDeviceWaitIdle, vkDestroySwapchainKHR in the
+    /// swapchain paths): Vulkan needs host access to every queue of the device externally
+    /// synchronized, and other threads submit while the presenter rebuilds the swapchain. The
+    /// caller must hold no scheduler lock (and must not take one while holding this).
+    [[nodiscard]] static std::unique_lock<std::mutex> LockQueue() {
+        return std::unique_lock<std::mutex>{submit_mutex};
+    }
+
 private:
     void AllocateWorkerCommandBuffers();
 

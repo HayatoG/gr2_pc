@@ -54,5 +54,24 @@ class OpenExternalTests(unittest.TestCase):
             self.assertNotIn('QDesktopServices.openUrl(', text, name)
 
 
+@unittest.skipIf(os.name == 'nt', 'Linux/macOS path')
+class OpenFileLimitTests(unittest.TestCase):
+    def test_soft_limit_is_raised_to_the_hard_one(self):
+        import resource
+        calls = []
+        with mock.patch.object(resource, 'getrlimit', return_value=(1024, 524288)), \
+                mock.patch.object(resource, 'setrlimit', lambda *a: calls.append(a)):
+            gr2_run.raise_open_file_limit()
+        self.assertEqual([(resource.RLIMIT_NOFILE, (524288, 524288))], calls)
+
+    def test_unlimited_hard_limit_is_left_alone(self):
+        import resource
+        calls = []
+        with mock.patch.object(resource, 'getrlimit', return_value=(1024, resource.RLIM_INFINITY)), \
+                mock.patch.object(resource, 'setrlimit', lambda *a: calls.append(a)):
+            gr2_run.raise_open_file_limit()
+        self.assertEqual([], calls)
+
+
 if __name__ == '__main__':
     unittest.main()
