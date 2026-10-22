@@ -40,7 +40,7 @@ Tudo vem do **seu** PS4 (GoldHEN + Itemzflow). Nada disso vai no download. Use *
 3. Abra **Gravity Rush 2** (`Gravity Rush 2.exe` no Windows). No Windows, se aparecer "O Windows protegeu o computador", clique em *Mais informações* e depois em *Executar assim mesmo*. O programa não é assinado digitalmente.
 4. Em **Pasta do jogo**, escolha a pasta que tem o `eboot.bin`. Escolha o idioma e clique em **Jogar**.
 
-No Linux, `./install_desktop.sh` adiciona o jogo ao menu de aplicativos.
+No Linux, `./install_desktop.sh` adiciona o jogo ao menu de aplicativos. No Windows, **Adicionar ao Steam** coloca o jogo na biblioteca do Steam (jogos não-Steam), com a arte do seu `pic1.png`; se o Steam estiver aberto, ele fecha por um momento e abre de novo.
 
 ### Durante o jogo
 - **F10**: contador de FPS · **Insert** (ou R3 + L2): menu do port
@@ -85,7 +85,7 @@ Everything comes from **your own** PS4 (GoldHEN + Itemzflow). None of it is in t
 3. Open **Gravity Rush 2** (`Gravity Rush 2.exe` on Windows). On Windows, if "Windows protected your PC" appears, click *More info*, then *Run anyway*. The program is not digitally signed.
 4. Under **Game folder**, choose the folder that has `eboot.bin`. Pick the language and click **Play**.
 
-On Linux, `./install_desktop.sh` adds the game to the applications menu.
+On Linux, `./install_desktop.sh` adds the game to the applications menu. On Windows, **Add to Steam** puts the game in your Steam library (non-Steam games), with art from your `pic1.png`; if Steam is open, it closes for a moment and opens again.
 
 ### While playing
 - **F10**: FPS counter · **Insert** (or R3 + L2): the port's menu

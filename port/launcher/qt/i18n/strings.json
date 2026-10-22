@@ -1918,5 +1918,21 @@
   "exp_profile_custom": {
     "en": "Profile: custom ({n} changes)",
     "pt": "Perfil: personalizado ({n} mudanças)"
+  },
+  "gfx_what_ps4_pro": {
+    "en": "Tells the game it runs on a PS4 Pro, so it takes its own Pro rendering path. Experimental.",
+    "pt": "Diz ao jogo que ele roda num PS4 Pro, então ele usa a própria renderização de Pro. Experimental."
+  },
+  "gfx_what_freeze_workaround": {
+    "en": "Compiles new shaders on the game thread with two draw-preparation workers. Avoids a rare GPU freeze seen with the 4K patches; first-time shader loading is slower.",
+    "pt": "Compila shaders novos na thread do jogo com dois workers de preparação. Evita um travamento raro da GPU visto com os patches 4K; o primeiro carregamento de shaders fica mais lento."
+  },
+  "gfx_what_dlss": {
+    "en": "NVIDIA DLSS on the game's own HDR image, depth and motion vectors (needs tlg_dlss.dll and nvngx_dlss.dll). F6 turns it on and off in game. Experimental.",
+    "pt": "NVIDIA DLSS na imagem HDR, profundidade e vetores de movimento do próprio jogo (precisa do tlg_dlss.dll e do nvngx_dlss.dll). F6 liga e desliga no jogo. Experimental."
+  },
+  "steam_close_confirm": {
+    "en": "Close Steam and add",
+    "pt": "Fechar o Steam e adicionar"
   }
 }

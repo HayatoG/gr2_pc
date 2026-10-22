@@ -55,6 +55,7 @@ public:
         bool reset;
         float frame_ms;
         float sharpness;
+        float mv_scale_x = 1.0f, mv_scale_y = 1.0f; ///< motion in render pixels by default
     };
 
     /// DLSS quality mode for an output/render size ratio (0 DLAA .. 4 Ultra Performance).

@@ -15,6 +15,7 @@ from .updates import Updates
 from .logic import backports_table, tlg_run
 import advanced_table  # noqa: E402
 import logtail  # noqa: E402
+import steam_shortcut  # noqa: E402
 
 CLOSE_DELAY_MS = 2000     # 'Close the launcher when the game starts': wait after the start
 LOG_LINES = 2000          # lines of the game log kept for the Home screen panel
@@ -187,6 +188,7 @@ class Backend(QObject):
     message = Signal(str)
     guideChanged = Signal()
     scrollRequested = Signal(int)   # used by the screenshot tool
+    steamDone = Signal(str)         # from the "Add to Steam" thread: the message to show
 
     def __init__(self, settings=None, translator=None, probes=None):
         """probes: optional dict of callables replacing the slow/hardware ones (tests, screenshots)."""
@@ -215,7 +217,9 @@ class Backend(QObject):
         self.lineReceived.connect(self._on_line)
         self.finished.connect(self._on_finished)
         self.gameStarted.connect(self._on_game_started)
-        self._tail = None        # logtail.LogTail of the running game's log
+        self._steam_armed = self._steam_busy = False
+        self.steamDone.connect(self._on_steam_done)
+        self._tail = None       # logtail.LogTail of the running game's log
         self._tail_timer = QTimer(self)
         self._tail_timer.setInterval(1000)
         self._tail_timer.timeout.connect(self._poll_log)
@@ -528,6 +532,47 @@ class Backend(QObject):
         tlg_run.mods_dir().mkdir(parents=True, exist_ok=True)
         tlg_run.open_external(tlg_run.mods_dir())
 
+    # -- Add to Steam (Windows) -------------------------------------------------------------------
+    @Property(bool, constant=True)
+    def steamAvailable(self):
+        return os.name == 'nt'
+
+    @Property(str, notify=stateChanged)
+    def steamButtonText(self):
+        return self.t_('steam_close_confirm' if self._steam_armed else 'steam')
+
+    @Slot()
+    def addToSteam(self):
+        """A non-Steam shortcut to "Play Gravity Rush 2.exe" with art cut from the dump's pic1.png.
+        Steam must be closed for the write: with Steam open, the first click asks (the button
+        becomes "Close Steam and add"), the second closes it, adds the game and opens it again."""
+        if self._steam_busy:
+            return
+        steam = steam_shortcut.steam_dir()
+        exe = tlg_run.PORT_DIR / steam_shortcut.PLAY_EXE
+        running = bool(steam) and exe.is_file() and steam_shortcut.steam_running()
+        if not steam or not exe.is_file():
+            self._message = self.t_('steam_missing' if not steam else 'steam_no_play')
+        elif running and not self._steam_armed:
+            self._steam_armed, self._message = True, self.t_('steam_close_ask')
+        else:
+            self._steam_armed, self._steam_busy = False, True
+            self._message = self.t_('steam_closing') if running else ''
+            settings = dict(self.settings)
+
+            def work():
+                try:
+                    ok, _ = steam_shortcut.install(steam, exe, running, lambda added: _steam_art(settings, added))
+                    self.steamDone.emit(self.t_('steam_done' if ok else 'steam_close_failed'))
+                except Exception as error:  # shown on the Home screen, the launcher keeps running
+                    self.steamDone.emit(str(error))
+            threading.Thread(target=work, daemon=True).start()
+        self.stateChanged.emit()
+
+    def _on_steam_done(self, message):
+        self._steam_busy, self._message = False, message
+        self.stateChanged.emit()
+
     @Property(str, notify=profileChanged)
     def advancedText(self):
         n = backports_table.advanced_changes(self.fix_states)
@@ -706,3 +751,27 @@ def _art(settings, name):
         if (folder / name).is_file():
             return folder / name
     return None
+
+
+def _steam_art(settings, added):
+    """Steam library art (QImage works off the UI thread): steam_shortcut.ART_CUTS of pic1.png and
+    icon0.png as the icon. Files already there (the player's own art) are kept."""
+    from PySide6.QtGui import QImage
+    picture = _art(settings, 'pic1.png')
+    icon = _art(settings, 'icon0.png') or tlg_run.PORT_DIR / 'launcher' / 'gr2.png'
+    full = QImage(str(picture)) if picture else QImage()
+    for grid, appid in added:
+        grid.mkdir(parents=True, exist_ok=True)
+        target = grid / f'{appid}_icon.png'
+        if icon.is_file() and not target.exists():
+            target.write_bytes(icon.read_bytes())
+        if full.width() != 1920 or full.height() != 1080:
+            continue
+        for suffix, (left, top, right, bottom), step in steam_shortcut.ART_CUTS:
+            target = grid / f'{appid}{suffix}.png'
+            if not target.exists():
+                cut = full.copy(left, top, right - left, bottom - top)
+                if step > 1:
+                    cut = cut.scaled(cut.width() // step, cut.height() // step, Qt.IgnoreAspectRatio,
+                                     Qt.SmoothTransformation)
+                cut.save(str(target))

@@ -51,7 +51,7 @@ public:
         return current.valid && previous.valid && depth_id;
     }
     [[nodiscard]] VideoCore::ImageId Depth() const noexcept {
-        return depth_id;
+        return depth_id ? depth_id : keep_depth ? last_depth_id : VideoCore::ImageId{};
     }
     /// The render size in the scene constants (the game's viewport; its targets may be
     /// allocated larger, e.g. 1916x1080 for a 1916x1078 scene), or zero before the first camera.
@@ -105,6 +105,10 @@ private:
     std::array<float, 2> jitter{}, previous_jitter{};
     std::array<u32, 2> render_size{};
     VideoCore::ImageId depth_id{};
+    /// TLG_KEEP_SCENE_DEPTH=1: the previous frame's scene depth stands in until the G-buffer
+    /// pass, so a depth pre-pass before it (Gravity Rush 2) gets the same jitter.
+    bool keep_depth = false;
+    VideoCore::ImageId last_depth_id{};
 
     vk::UniqueDescriptorSetLayout desc_layout;
     vk::UniquePipelineLayout pipeline_layout;

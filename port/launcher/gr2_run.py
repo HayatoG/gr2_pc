@@ -158,6 +158,11 @@ DEFAULT_SETTINGS = {
     'game_dir': '' if FROZEN else str(REPO_DIR / 'game' / 'CUSA03694'),
     'system_lib_dir': str(PORT_DIR / 'system_lib') if FROZEN else str(REPO_DIR / 'dump' / 'system_lib'),
     'gs_outline_off': True,        # TLG_SKIP_ADJACENCY: no black streaks (outline pass)
+    'ps4_pro': False,              # TLG_NEO: report a PS4 Pro, the game's own Pro render path
+    # TLG_ASYNC_SHADERS=0 + TLG_PREP_WORKERS=2: avoids the GPU page-fault/EOP deadlock freeze
+    # (tlg_pc #37; seen in GR2 with the 4K patch), at a few FPS and first-use shader stutter.
+    'freeze_workaround': False,
+    'dlss': False,                 # DLSS (DLAA) on the game's HDR scene with its own motion vectors
     'game_language': 'pt_BR',
     'ui_language': 'auto',         # auto | pt_BR | en_US
     'show_fps': False,
@@ -321,6 +326,16 @@ def list_mods(settings):
     return [(key, meta.get('Name'), meta.get('Note', ''), key in selected) for key, _, meta in found]
 
 
+def mods_extra_dmem_mb(settings):
+    """Extra direct memory the enabled mods ask for in their notes (shadPS4's "Needs
+    extra_dmem_in_mbytes N", e.g. the 4K resolution patches); the largest request, 0 for none."""
+    try:
+        notes = [note for _, _, note, enabled in list_mods(settings) if enabled]
+    except (OSError, ValueError):
+        return 0
+    return max([int(n) for note in notes for n in re.findall(r'extra_dmem_in_mbytes\s+(\d+)', note or '')] or [0])
+
+
 def set_mod_enabled(key, enabled):
     """Updates mods.json: moves key into enabled/disabled, out of the other list."""
     path = mods_config()
@@ -480,6 +495,26 @@ def build_env(settings, extra=None):
     import padsettings
     for name, value in padsettings.environment(settings).items():   # mouse/touchpad mode, GR2_KEY_MAP
         env.setdefault(name, value)
+    if settings.get('ps4_pro', False):
+        env.setdefault('TLG_NEO', '1')
+    if settings.get('freeze_workaround', False):
+        env.setdefault('TLG_ASYNC_SHADERS', '0')
+        env.setdefault('TLG_PREP_WORKERS', '2')
+    if settings.get('dlss', False):
+        # Gravity Rush 2's frame (F11 frame captures): HDR scene RGBA16F drawn with the
+        # D32S8 scene depth; its G-buffer has 3-4 targets after a depth pre-pass; compute shader
+        # aafa61e8 writes the game's R16G16F motion vectors; 77ef43b5 (exposure, 1x1x1) runs
+        # right before the tonemap pass.
+        if 'TLG_UPSCALER' not in os.environ:
+            env['TLG_UPSCALER'] = 'dlss'
+        env.setdefault('TLG_GAME_MOTION_CS', 'aafa61e8')
+        # 77ef43b5 skips most frames; the tonemap draw (pixel shader c92eb597) runs every frame.
+        env.setdefault('TLG_UPSCALE_BEFORE_PS', 'c92eb597')
+        env.setdefault('TLG_GBUFFER_MRT', '3')
+        env.setdefault('TLG_KEEP_SCENE_DEPTH', '1')
+    extra_dmem = mods_extra_dmem_mb(settings)
+    if extra_dmem:  # retail 5056 MiB (+512 in Pro mode, runtime_memory.c) plus what the mods ask
+        env.setdefault('TLG_DMEM_MB', str(5056 + (512 if env.get('TLG_NEO') == '1' else 0) + extra_dmem))
     restart = f'"{sys.executable}" --play' if FROZEN else f'"{sys.executable}" "{Path(__file__).resolve()}"'
     env.setdefault('TLG_RESTART_COMMAND', restart)
     # Linux package: the libraries built with the port (SDL3, FFmpeg, ...) are in out/lib.

@@ -57,6 +57,8 @@ CameraMotion::CameraMotion(const Instance& instance_, Scheduler& scheduler_,
     // The upscaler can be switched on from the menu at any time: the camera is always tracked
     // unless TLG_UPSCALER=none.
     for_upscaler = !(upscaler && std::strcmp(upscaler, "none") == 0);
+    const char* keep = std::getenv("TLG_KEEP_SCENE_DEPTH");
+    keep_depth = keep && keep[0] == '1';
     const auto device = instance.GetDevice();
     if (for_upscaler) {
         const std::array<vk::DescriptorSetLayoutBinding, 3> motion_bindings = {{
@@ -250,6 +252,7 @@ void CameraMotion::OnDisplayPass(VideoCore::ImageId frame) {
     }
     if (!frame_has_camera) InvalidateHistory();
     frame_has_camera = false;
+    if (depth_id) last_depth_id = depth_id;
     depth_id = {};
 }
 

@@ -401,6 +401,15 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     // tlg: scaled upscaler presets: the output-size display buffer drawn by the port.
     TemporalUpscaler::Display display{};
     const bool upscaled = rasterizer->GetUpscaler().DisplayOverride(cpu_address, display);
+    // tlg: the size actually shown (the game's display buffer, or the upscaler's), once per change.
+    static u32 shown_width = 0, shown_height = 0;
+    const u32 width = upscaled ? display.width : attribute.attrib.width;
+    const u32 height = upscaled ? display.height : attribute.attrib.height;
+    if (width != shown_width || height != shown_height) {
+        shown_width = width;
+        shown_height = height;
+        std::printf("Display: %ux%u (%s)\n", width, height, upscaled ? "upscaler" : "game buffer");
+    }
     VideoCore::ImageId image_id{};
     if (!upscaled) {
         auto desc = VideoCore::TextureCache::ImageDesc{attribute, cpu_address};

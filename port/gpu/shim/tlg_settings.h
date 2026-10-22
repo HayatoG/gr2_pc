@@ -28,6 +28,13 @@ inline constexpr int OutputWidths[] = {1280, 1920, 2560, 3840};
 inline constexpr int OutputHeights[] = {720, 1080, 1440, 2160};
 inline constexpr int OutputCount = 4;
 inline constexpr int OutputDefault = 1; ///< 1920x1080, the game's own size
+/// The game's own motion vectors (TLG_GAME_MOTION_CS, Gravity Rush 2): how their values become
+/// render pixels, previous minus current. Multipliers of the render size per mode: 0-1 screen
+/// units, -1..1 clip units (y flipped), then raw pixels; each with both signs.
+inline constexpr int GameMotionModes = 6;
+inline constexpr float GameMotionScale[GameMotionModes][2] = {
+    {-1.0f, -1.0f}, {1.0f, 1.0f}, {-0.5f, 0.5f}, {0.5f, -0.5f}, {-1.0f, -1.0f}, {1.0f, 1.0f}};
+inline constexpr bool GameMotionPixels[GameMotionModes] = {false, false, false, false, true, true};
 
 inline constexpr int kBackportPrefs = 32;
 /// A/B switches read once at start (recompiler_toggles.h, device creation); tlg.ini keys.
@@ -98,6 +105,13 @@ struct Values {
     std::atomic<bool> fsr4_invert_jitter{false};
     std::atomic<int> active_render_width{1920}, active_render_height{1080};
     std::atomic<int> output_res{OutputDefault}; ///< index into OutputWidths
+    /// Index into GameMotionScale (TLG_GAME_MV_MODE at start, F7 cycles while testing).
+    std::atomic<int> game_motion_mode{0};
+    /// The temporal upscaler ran in the last frame (overlay); F8 asks it to dump its images.
+    std::atomic<bool> upscaler_ran{false};
+    std::atomic<bool> upscaler_dump{false};
+    /// Why it did not run (static text), or null.
+    std::atomic<const char*> upscaler_wait{nullptr};
     /// Live resolution and preset changes (run.sh): 0 off by default (startup patch, fastest
     /// on the Steam Deck and older GPUs), -1 auto (strong discrete GPUs), 1 on. On restart.
     std::atomic<int> live_resolution{0};

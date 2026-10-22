@@ -217,7 +217,8 @@ int32_t Evaluate(VkCommandBuffer command, const TlgDlssEvaluate* evaluate) {
     parameters.InJitterOffsetX = evaluate->jitter_x;
     parameters.InJitterOffsetY = evaluate->jitter_y;
     parameters.InReset = evaluate->reset;
-    parameters.InMVScaleX = parameters.InMVScaleY = 1.0f;
+    parameters.InMVScaleX = evaluate->mv_scale_x;
+    parameters.InMVScaleY = evaluate->mv_scale_y;
     parameters.InPreExposure = parameters.InExposureScale = 1.0f;
     parameters.InFrameTimeDeltaInMsec = evaluate->frame_ms;
     return Check("DLSS evaluation", NGX_VULKAN_EVALUATE_DLSS_EXT(command, state.feature,

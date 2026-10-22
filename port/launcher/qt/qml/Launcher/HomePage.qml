@@ -107,6 +107,12 @@ Item {
                 text: Theme.tr("choose_folder")
                 onClicked: folderDialog.open()
             }
+            GhostButton {   // non-Steam shortcut + library art (Windows); messages show in the notice
+                width: parent.width
+                visible: Backend.steamAvailable
+                text: Backend.steamButtonText
+                onClicked: Backend.addToSteam()
+            }
             GhostButton {   // GitHub Sponsors page (an embedded iframe is not possible in Qt)
                 width: parent.width
                 text: "♥  " + Theme.tr("sponsor_label")
