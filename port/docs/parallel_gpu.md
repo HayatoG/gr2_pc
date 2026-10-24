@@ -607,3 +607,25 @@ FREEZE: end of report (N threads; the game keeps running)
 - Registers: Linux sends SIGURG to each thread (handler copies registers and the frame chain);
   Windows suspends each thread for `GetThreadContext`. Memory is read with
   `process_vm_readv` / `ReadProcessMemory`.
+
+Since the inFAMOUS core sync of 23/10/2026 (iss_pc main; `GR2_` names shown, `TLG_` still works):
+
+- Blocking rwlock waits are marked too (`rwlock (read)`, `rwlock (write)`, timed variants, with the
+  name given at `scePthreadRwlockInit`); before, such a thread showed as running.
+- Host wait slots are recycled: once all 64 are taken, a thread whose slot owner has exited takes
+  that slot over (long sessions create and destroy decoder threads).
+- `GR2_WAIT_STATS=1`: per-thread wait accounting, printed every 5 s (`Runtime: wait stats`): waits,
+  time blocked and the longest wait with its object, to attribute a stutter to a thread.
+- `GR2_VERBOSE_LOG=1`: extra lines for semaphores (creation, deletion, zero-timeout failures) and
+  `GR2_TRACE_SEMA` capped at 2000 lines. `sceMsgDialogOpen` always logs the text the game shows.
+- `GR2_THREAD_PRIO=1` (off by default): guest priorities below normal (> 700) lower the host
+  priority (nice / BELOW_NORMAL). `GR2_TSC=process`: sceKernelReadTsc on the 1 GHz process clock
+  instead of the host's rdtsc (hosts whose TSC differs per core).
+- New threads start with their creator's MXCSR and x87 control words (FreeBSD libthr behaviour;
+  Windows starts every thread at its defaults).
+- A condition-variable wait on a mutex the caller does not hold fails with EPERM, as on the PS4
+  (iss_pc #637); the host wait used to return holding a mutex the guest never unlocks.
+- Windows: a speculative read with a recovery point (shader capture, draw preparation) now
+  recovers before the GPU page tracking runs, as on Linux. The capture worker used to wait in the
+  fault handler on the GPU thread, which was waiting for that worker (#48, #49, #50:
+  `tlg:ShaderCapture0` "waiting on GPU thread (command) ... inside GPU page fault handler").

@@ -85,9 +85,21 @@ static ABI uint64_t process_time_counter(void) {
     return (uint64_t)(t.tv_sec-process_start.tv_sec)*1000000000+(uint64_t)(t.tv_nsec-process_start.tv_nsec);
 }
 static ABI uint64_t process_time_frequency(void) { return 1000000000; }
-static ABI uint64_t read_tsc(void) { return __rdtsc(); }
+/* The guest's TSC. Default: the host's rdtsc with its measured frequency, because games that
+ * execute rdtsc themselves (inFAMOUS: 391 sites) must see the same clock from
+ * sceKernelReadTsc/GetTscFrequency; with the process clock (1 GHz) they ran 3-4x too fast.
+ * TLG_TSC=process: the process clock in nanoseconds (upstream gow3_pc 2dea61f), for games that
+ * only use the kernel calls on hosts whose rdtsc differs per core (3.9 s apart on a Xeon
+ * E5-2680 v4). Per-game choice: the game profile in ps4_core. */
 static uint64_t tsc_hz;
+static int tsc_process_clock(void) {
+    static int value=-1;
+    if (value<0) { const char *e=getenv("TLG_TSC"); value=e && !strcmp(e,"process"); }
+    return value;
+}
+static ABI uint64_t read_tsc(void) { return tsc_process_clock() ? process_time_counter() : __rdtsc(); }
 static ABI uint64_t tsc_frequency(void) {
+    if (tsc_process_clock()) return 1000000000;
     if (!tsc_hz) {
         struct timespec a,b,nap={0,20000000};
         clock_gettime(CLOCK_MONOTONIC,&a); uint64_t t0=__rdtsc();
@@ -106,6 +118,7 @@ static ABI uint64_t tsc_frequency(void) {
 uint64_t runtime_process_time_us(void) { return process_time(); }
 uint64_t runtime_process_time_counter(void) { return process_time_counter(); }
 uint64_t runtime_tsc_frequency(void) { return tsc_frequency(); }
+uint64_t runtime_read_tsc(void) { return read_tsc(); }
 static int sleep_ns(uint64_t ns,uintptr_t frame) {
     int e=0;
     runtime_wait_begin("sleep",(const void *)(uintptr_t)(ns/1000),NULL,NULL,frame); /* object: microseconds */
@@ -268,8 +281,14 @@ static ABI int32_t guest_sysctl(const int32_t *name,uint32_t namelen,void *old,u
 }
 
 /* ---- pthread_once and thread-specific data ---- */
+/* The routine runs once; the others wait for the state to become 1. A routine that never returns
+ * normally (thread exit, a longjmp out of it, a crash) leaves the waiters in the loop, as in
+ * FreeBSD's libthr they would stay blocked in the kernel: the loop cannot be resolved without
+ * changing the semantics. It sleeps between checks (a yield at first, then 0.1 ms, then 1 ms)
+ * instead of burning a core with sched_yield. */
 static ABI int32_t thread_once(int32_t *once,void (ABI *routine)(void)) {
     if (!once || !routine) return ERR(22);
+    unsigned turns=0;
     for (;;) {
         int32_t state=__atomic_load_n(once,__ATOMIC_ACQUIRE);
         if (state==1) return 0;
@@ -278,7 +297,14 @@ static ABI int32_t thread_once(int32_t *once,void (ABI *routine)(void)) {
             __atomic_store_n(once,1,__ATOMIC_RELEASE);
             return 0;
         }
-        sched_yield();
+        if (++turns<=8) { sched_yield(); continue; }
+        const uint64_t ns=turns<64 ? 100000 : 1000000;
+#ifdef _WIN32
+        compat_sleep_ns(ns);
+#else
+        struct timespec nap={.tv_sec=0,.tv_nsec=(long)ns};
+        nanosleep(&nap,NULL);
+#endif
     }
 }
 static ABI int32_t posix_once(int32_t *once,void (ABI *routine)(void)) { return thread_once(once,routine) ? 22 : 0; }
