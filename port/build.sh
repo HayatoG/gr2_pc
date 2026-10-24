@@ -118,6 +118,8 @@ if [[ ${1:-} == --test ]]; then
     out/rwlock-rp-test
     "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_freeze.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" -o out/freeze-test
     out/freeze-test
+    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -UNDEBUG -pthread -I. -Isrc tests/test_tsc_clock.c -lm -o out/tsc-clock-test
+    out/tsc-clock-test
     "$CC" -std=c11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -I. -Isrc tests/test_content.c src/runtime_content.c -o out/content-test
     out/content-test
     "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${includes[@]}" -I. -Isrc tests/test_mp3.c src/runtime_mp3.c out/libatrac9.a -lm "${libraries[@]}" -o out/mp3-test
