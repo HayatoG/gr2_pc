@@ -5,7 +5,9 @@ environment is a getenv() of the GPU core or the runtime (GR2_X is copied to TLG
 inFAMOUS-only switches (BP01-BP12, occlusion mode, LDS barriers, AMD workarounds) must not come back."""
 import re
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 
 from paths import ROOT
 sys.path.insert(0, str(ROOT / 'launcher'))
@@ -67,6 +69,16 @@ class LauncherOptionTests(unittest.TestCase):
         for _, rows in graphics.SECTIONS:
             for rid in rows:
                 self.assertTrue(rid in graphics.SETTING_ROWS or rid in ids, rid)
+
+class GameModuleTests(unittest.TestCase):
+    def test_dlc_loader_is_linked_only_when_present(self):
+        with tempfile.TemporaryDirectory() as folder:
+            settings = {'game_dir': folder, 'system_lib_dir': folder, 'native_audio': False}
+            base = gr2_run.game_modules(settings)
+            self.assertEqual(base[:3], ['libc.prx', 'libSceFios2.prx', 'libSceJobManager.prx'])
+            self.assertFalse(any(m.endswith('dlcldr.prx') for m in base))
+            (Path(folder) / 'dlcldr.prx').write_bytes(b'')
+            self.assertEqual(gr2_run.game_modules(settings), base + [str(Path(folder) / 'dlcldr.prx')])
 
 
 if __name__ == '__main__':

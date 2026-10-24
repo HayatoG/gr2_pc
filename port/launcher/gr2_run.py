@@ -215,6 +215,23 @@ def ngs2_module(settings):
     return path if settings.get('native_audio', True) and path.is_file() else None
 
 
+def game_modules(settings):
+    """Modules linked into out/boot-linked.bin (link_modules.py --modules, in this order).
+    dlcldr.prx: some dumps carry a DLC loader next to eboot.bin, and their eboot imports its
+    library (#43, 'first unsupported PS4 import: ...#dlcldr'). Linked when present, so its exports
+    bind; a dump without it links as before."""
+    game = Path(settings['game_dir'])
+    modules = ['libc.prx', 'libSceFios2.prx', 'libSceJobManager.prx',
+               str(game / 'sysdata' / 'libSceSecure.prx')]
+    ngs2 = ngs2_module(settings)
+    if ngs2:
+        modules.append(str(ngs2))
+    dlc_loader = game / 'dlcldr.prx'
+    if dlc_loader.is_file():
+        modules.append(str(dlc_loader))
+    return modules
+
+
 def update_ini(path, values):
     """Sets keys in tlg.ini (the in-game menu's file), keeping every other line."""
     lines = path.read_text(encoding='utf-8').splitlines() if path.is_file() else ['# tlg settings']
@@ -339,11 +356,7 @@ def prepare(settings, log=print):
     module list that was linked."""
     game = settings['game_dir']
     scripts = PORT_DIR / 'scripts'
-    modules = ['libc.prx', 'libSceFios2.prx', 'libSceJobManager.prx',
-               str(Path(game) / 'sysdata' / 'libSceSecure.prx')]
-    ngs2 = ngs2_module(settings)
-    if ngs2:
-        modules.append(str(ngs2))
+    modules = game_modules(settings)
     steps = [
         [*python_command(scripts / 'prepare.py'), game, '--out', str(OUT_DIR)],
         [*python_command(scripts / 'link_modules.py'), game, '--out', str(OUT_DIR), '--modules', *modules],
